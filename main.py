@@ -52,7 +52,10 @@ def as_json(brief: synth.Brief) -> str:
         }
     return json.dumps({
         "top_signal": [node(e) for e in brief.top],
-        "also_worth_knowing": [node(e) for e in brief.also],
+        "also_worth_knowing": (
+            [{"category": n, "entries": [node(e) for e in es]} for n, es in brief.groups]
+            if brief.groups else [node(e) for e in brief.also]
+        ),
         "video": node(brief.video) if brief.video else None,
         "meta_note": brief.meta,
     }, indent=2, ensure_ascii=False)
@@ -68,6 +71,10 @@ def main() -> int:
     parser.add_argument("--per-feed", type=int, help="override per-feed item cap")
     parser.add_argument("--model", help="override the model for every stage")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of prose")
+    parser.add_argument("--categories", action="store_true",
+                        help="group tier two into categories (6-9 items)")
+    parser.add_argument("--flat", action="store_true",
+                        help="flat tier two of exactly 5 (overrides config)")
     parser.add_argument("--no-dedupe", action="store_true",
                         help="skip the duplicate-clustering pre-pass")
     parser.add_argument("--no-gate", action="store_true",
@@ -86,6 +93,8 @@ def main() -> int:
     config = load_config(Path(args.config))
     window = config.get("window", {})
     llm_cfg = config.get("llm", {})
+    layout = "flat" if args.flat else (args.categories and "categories"
+                                       or config.get("layout", "flat"))
 
     items, warnings = sources.collect(
         config["sources"],
@@ -131,6 +140,7 @@ def main() -> int:
             config["interests"],
             config.get("priorities", ""),
             config.get("audience", ""),
+            categorised=layout == "categories",
             model=model_for(llm_cfg, "synthesis", args.model),
             temperature=llm_cfg.get("temperature"),
             max_output_tokens=llm_cfg.get("max_output_tokens"),

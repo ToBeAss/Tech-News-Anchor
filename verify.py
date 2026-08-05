@@ -33,6 +33,16 @@ def _normalise(raw: str) -> str:
     return re.sub(r"[.,\u00a0 ]", "", raw)
 
 
+# Letters that follow a figure as a magnitude or unit rather than making it a
+# name: $10B, 38bn, 133MW, 4.7bn. Without this, "$10B" in a headline reads as an
+# identifier and the figure it states goes unrecognised.
+_UNIT_SUFFIXES = {
+    "b", "bn", "m", "mn", "k", "t", "g", "x", "%",
+    "mw", "gw", "kw", "tw", "kb", "mb", "gb", "tb", "pb",
+}
+_TRAILING_ALPHA = re.compile(r"[A-Za-z%]+")
+
+
 def _is_embedded(text: str, start: int, end: int) -> bool:
     """True when the digits are part of a name rather than a quantity.
 
@@ -41,8 +51,13 @@ def _is_embedded(text: str, start: int, end: int) -> bool:
     worse than a miss: a checker that cries wolf gets ignored.
     """
     before = text[start - 1] if start > 0 else ""
-    after = text[end] if end < len(text) else ""
-    return (before.isalnum() or before == "-") or after.isalpha()
+    if before.isalnum() or before == "-":
+        return True                     # kode24, GPT-4, Web3, COVID-19
+
+    match = _TRAILING_ALPHA.match(text, end)
+    if match and match.group().lower() not in _UNIT_SUFFIXES:
+        return True                     # 3rd, 2026Q1 and similar word-forms
+    return False
 
 
 def _numbers(text: str) -> list[tuple[str, str]]:

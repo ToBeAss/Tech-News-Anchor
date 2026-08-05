@@ -110,8 +110,17 @@ def to_terminal(brief: Brief, *, considered: int, warnings: list[str],
 
     if brief.also:
         out.append(_rule("📎 ALSO WORTH KNOWING"))
-        out += [_entry(e, terse=True, flags=flagged.get(e.item.id)) for e in brief.also]
-        out.append("")
+        if brief.groups:
+            # Heading sits left of its entries so the eye can drop down the
+            # labels and stop where it wants — the whole point of grouping.
+            for name, entries in brief.groups:
+                out.append(DIM(f"  ── {name.upper()}"))
+                out += [_entry(e, terse=True, flags=flagged.get(e.item.id))
+                        for e in entries]
+                out.append("")
+        else:
+            out += [_entry(e, terse=True, flags=flagged.get(e.item.id)) for e in brief.also]
+            out.append("")
 
     if brief.video:
         out.append(_rule("🎥 VIDEO"))

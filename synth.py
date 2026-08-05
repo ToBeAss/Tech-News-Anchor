@@ -34,16 +34,24 @@ class Entry:
 # day the last slots are the best of a weak field rather than genuinely
 # strong; the commentary is expected to say so rather than oversell.
 TARGET_TOP = 3
-TARGET_ALSO = 5
+TARGET_ALSO = 5            # flat layout: exactly 5
+
+# Categorised layout. Categories exist to make a longer tier two scannable, so
+# they only pay off with enough items to group: a one-item category is a
+# headline with extra formatting.
+CAT_MIN_ITEMS = 2
+CAT_MAX = 4
+CAT_TOTAL_MAX = 9
 
 
 @dataclass(frozen=True)
 class Brief:
     top: list[Entry]
-    also: list[Entry]
+    also: list[Entry]                       # always flat, whatever the layout
     video: Entry | None
     meta: str | None
-    shortfall: str | None = None   # set when a section came back under target
+    shortfall: str | None = None            # set when a section came back under target
+    groups: tuple[tuple[str, tuple[Entry, ...]], ...] = ()   # (name, entries), categorised only
 
 
 _SYSTEM = """You are a technical editor writing a daily tech brief for one \
@@ -146,7 +154,7 @@ item's importance.
 ## Budget (hard limits \u2014 the brief must stay under a 3 minute read)
 - top_signal: EXACTLY 3 entries. Not 2, not 4. fact 20-30 words (one \
 sentence). comment 40-55 words. This tier gets the depth.
-- also_worth_knowing: EXACTLY 5 entries. comment MAX 25 WORDS \u2014 count them. One \
+- also_worth_knowing: {also_spec} comment MAX 25 WORDS \u2014 count them. One \
 sentence, and it must END, not trail off. This tier is scannable, not \
 readable. If an item needs more than one line to justify, it belongs in \
 top_signal or nowhere.
@@ -159,18 +167,49 @@ there is genuinely no video candidate in the list.
 pattern (several sources circling the same underlying shift). Not a summary \
 of the brief.
 
+{category_rules}
 Output STRICT JSON, nothing else \u2014 no prose, no markdown fences:
 {{
   "top_signal": [{{"id": "iNN", "headline": "...", "fact": "...", "comment": "..."}}],
-  "also_worth_knowing": [{{"id": "iNN", "headline": "...", "comment": "..."}}],
+  "also_worth_knowing": {also_shape},
   "video": {{"id": "iNN", "headline": "...", "fact": "...", "comment": "..."}} or null,
   "meta_note": "..." or null
 }}"""
 
 
+_FLAT_SPEC = "EXACTLY 5 entries."
+_FLAT_SHAPE = '[{{"id": "iNN", "headline": "...", "comment": "..."}}]'
+_CAT_SPEC = ("grouped into 2-4 CATEGORIES, each holding 2-3 entries, 6-9 entries "
+             "in total. See the categories section below.")
+_CAT_SHAPE = ('[{{"category": "...", "entries": [{{"id": "iNN", "headline": "...", '
+              '"comment": "..."}}]}}]')
+_CATEGORY_RULES = """
+
+## Categories (also_worth_knowing only)
+Group tier-two entries so a longer list stays scannable. Top signal is NOT \
+categorised \u2014 it is three items ranked by importance and slicing it \
+destroys that ranking.
+
+- Categories emerge FROM the items. Never pick a weak item to fill out a \
+category, and never invent a category to justify one story.
+- MINIMUM 2 entries per category. A category with one entry is a headline with \
+extra formatting \u2014 if only one item fits a theme, put it in a broader \
+category or drop it.
+- 2-4 categories. Above that you are back to a flat list.
+- Order categories by the importance of their contents, so the first block is \
+the one worth reading first. Order entries within a category the same way.
+- Names: two or three plain words. No colons, no cleverness, no puns. \
+"Infrastructure & compute", not "The physical substrate of AI".
+- REUSE these names wherever they fit, so the brief has a familiar shape day \
+to day: Infrastructure & compute / Governance & regulation / Security & \
+resilience / Developer tooling / Models & research / Norway & public sector.
+  Invent a new name only when the day's items genuinely do not fit any of \
+them \u2014 novelty here costs the reader more than it gains."""
+
+
 def build(items: list[Item], interests: str, priorities: str = "",
-          audience: str = "", *, model=None, temperature=None,
-          max_output_tokens=None) -> Brief:
+          audience: str = "", *, categorised: bool = False, model=None,
+          temperature=None, max_output_tokens=None) -> Brief:
     if not items:
         raise SynthError("no items to synthesise")
 
@@ -181,12 +220,15 @@ def build(items: list[Item], interests: str, priorities: str = "",
             audience=(audience or "(not specified)").strip(),
             interests=interests.strip(),
             priorities=(priorities or "(none)").strip(),
+            also_spec=_CAT_SPEC if categorised else _FLAT_SPEC,
+            also_shape=_CAT_SHAPE if categorised else _FLAT_SHAPE,
+            category_rules=_CATEGORY_RULES if categorised else "",
         ),
         model=model,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
     )
-    return _validate(_parse(raw), {i.id: i for i in items})
+    return _validate(_parse(raw), {i.id: i for i in items}, categorised=categorised)
 
 
 def _parse(raw: str) -> dict[str, Any]:
@@ -233,17 +275,61 @@ def _section(data: dict, key: str, index: dict[str, Item]) -> list[Entry]:
     return out
 
 
-def _validate(data: dict, index: dict[str, Item]) -> Brief:
+def _categories(data: dict, index: dict[str, Item], claimed: set[str]):
+    """Parse the categorised tier two. Returns (groups, flat_entries).
+
+    Categories under CAT_MIN_ITEMS are dropped rather than shown: the whole
+    point of grouping is scannability, and a one-item group is noise.
+    """
+    raw = data.get("also_worth_knowing") or []
+    groups: list[tuple[str, tuple[Entry, ...]]] = []
+    flat: list[Entry] = []
+    seen = set(claimed)
+
+    for node in raw:
+        if not isinstance(node, dict):
+            continue
+        name = str(node.get("category") or "").strip()
+        entries = []
+        for child in node.get("entries") or []:
+            entry = _entry(child, index)
+            if entry and entry.item.id not in seen:
+                seen.add(entry.item.id)
+                entries.append(entry)
+        if not name or len(entries) < CAT_MIN_ITEMS:
+            continue
+        if len(flat) + len(entries) > CAT_TOTAL_MAX:
+            entries = entries[:CAT_TOTAL_MAX - len(flat)]
+            if len(entries) < CAT_MIN_ITEMS:
+                break
+        groups.append((name, tuple(entries)))
+        flat.extend(entries)
+        if len(groups) >= CAT_MAX or len(flat) >= CAT_TOTAL_MAX:
+            break
+
+    return groups, flat
+
+
+def _validate(data: dict, index: dict[str, Item], *, categorised: bool = False) -> Brief:
     # Caps enforced here, not only in the prompt: an over-long section is a
     # silent quality regression, and truncating is better than trusting.
     top = _section(data, "top_signal", index)[:TARGET_TOP]
-    also = [e for e in _section(data, "also_worth_knowing", index)
-            if e.item.id not in {t.item.id for t in top}][:TARGET_ALSO]
+    claimed = {t.item.id for t in top}
+
+    groups: list[tuple[str, tuple[Entry, ...]]] = []
+    if categorised:
+        groups, also = _categories(data, index, claimed)
+    else:
+        also = [e for e in _section(data, "also_worth_knowing", index)
+                if e.item.id not in claimed][:TARGET_ALSO]
 
     # Backfill: if the model under-filled top_signal, promote from also rather
     # than shipping a short tier. Only shifts placement, never invents entries.
     while len(top) < TARGET_TOP and also:
-        top.append(also.pop(0))
+        promoted = also.pop(0)
+        top.append(promoted)
+        groups = [(n, tuple(e for e in es if e is not promoted)) for n, es in groups]
+        groups = [(n, es) for n, es in groups if len(es) >= CAT_MIN_ITEMS]
     video = _entry(data.get("video"), index)
     if video and video.item.id in {e.item.id for e in top + also}:
         video = None
@@ -267,8 +353,10 @@ def _validate(data: dict, index: dict[str, Item]) -> Brief:
     shortfall = []
     if len(top) < TARGET_TOP:
         shortfall.append(f"top_signal {len(top)}/{TARGET_TOP}")
-    if len(also) < TARGET_ALSO:
-        shortfall.append(f"also_worth_knowing {len(also)}/{TARGET_ALSO}")
+    floor = CAT_MIN_ITEMS * 2 if categorised else TARGET_ALSO
+    if len(also) < floor:
+        shortfall.append(f"also_worth_knowing {len(also)}/{floor}")
 
     return Brief(top=top, also=also, video=video, meta=meta,
-                 shortfall=", ".join(shortfall) or None)
+                 shortfall=", ".join(shortfall) or None,
+                 groups=tuple(groups))
