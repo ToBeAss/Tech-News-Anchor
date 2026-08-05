@@ -23,7 +23,7 @@ DEGRADED = 0xE8A33D     # amber — a source was lost this run or further afield
 META_COLOR = 0x4A4A50   # subdued grey; meta is context, not content
 
 # Discord webhook limits (enforced below, not hoped for).
-MAX_MESSAGE_CHARS = 8500
+MAX_MESSAGE_CHARS = 6000
 MAX_DESCRIPTION = 4096
 MAX_TITLE = 256
 MAX_FOOTER = 2048
