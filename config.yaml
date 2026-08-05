@@ -47,7 +47,15 @@ memory:
 layout: "categories"
 
 window:
-  hours: 36
+  # Deliberately wider than the daily publishing cadence. With memory on, the
+  # window is not "what gets published" — it is "what is eligible". Memory
+  # handles freshness; the window handles reach. Overlap buys three things:
+  #   - a failed run is recovered by the next one instead of losing a day
+  #   - a story crowded out on a busy day gets another chance on a quiet one
+  #     (memory only blocks items that were actually briefed)
+  #   - late-arriving and backfilled feed items are not dropped at the boundary
+  # Items carry their age into the prompt, so older ones must earn their slot.
+  hours: 48
   per_feed: 12
 
 # Who the brief is for. This is context for JUDGEMENT, not a topic filter —

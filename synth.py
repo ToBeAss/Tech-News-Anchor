@@ -104,6 +104,12 @@ organisation or sector.
 not a subject requirement. Never force a connection to their organisation into \
 the commentary, and never pick a weak item because it is superficially \
 on-sector over a strong one that is not.
+- RECENCY: each item carries its age. The window deliberately reaches back \
+further than a day so nothing is lost to a failed run or a crowded one, but \
+the brief is published daily and should read as today's. Prefer the fresher \
+item when two are comparable; an older one needs to be clearly stronger to \
+earn a slot. If you do surface something several days old, say so in the fact \
+sentence ("reported Monday", "last week") rather than implying it just broke.
 - Never invent stories. Only use ids from the supplied list.
 
 ## Writing

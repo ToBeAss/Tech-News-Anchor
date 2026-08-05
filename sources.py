@@ -54,10 +54,26 @@ class Item:
     published: datetime | None
     related: tuple[tuple[str, str, str], ...] = ()   # (origin, title, url) of merged duplicates
 
+    def age(self, now: datetime | None = None) -> str:
+        """Coarse relative age, e.g. '3h', '2d'. Empty when the feed gave no date."""
+        if self.published is None:
+            return ""
+        delta = (now or datetime.now(timezone.utc)) - self.published
+        hours = delta.total_seconds() / 3600
+        if hours < 1:
+            return "just now"
+        if hours < 48:
+            return f"{int(hours)}h ago"
+        return f"{int(hours // 24)}d ago"
+
     def for_prompt(self) -> str:
         """What the model sees. Origin is included deliberately — knowing a story
-        came from a vendor domain is signal for calling it a vendor announcement."""
-        head = f"[{self.id}] ({self.origin}, {self.kind}) {self.title}"
+        came from a vendor domain is signal for calling it a vendor announcement.
+        Age matters once the window is wider than a day: without it the model
+        cannot tell a two-hour-old story from a four-day-old one, nor hedge with
+        'from Monday' when surfacing something it missed earlier."""
+        stamp = f", {self.age()}" if self.age() else ""
+        head = f"[{self.id}] ({self.origin}, {self.kind}{stamp}) {self.title}"
         body = f"{head}\n{self.summary}" if self.summary else head
         if self.related:
             covers = "; ".join(f"{o}: {t}" for o, t, _ in self.related)
