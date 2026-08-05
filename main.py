@@ -5,6 +5,9 @@
   python main.py --hours 72      # widen the window for a catch-up run
   python main.py --json          # machine-readable, for piping/inspection
   python main.py --why <url>     # what a briefed item said when it was briefed
+  python main.py --post          # render and send to Discord
+  python main.py --discord-dry   # print the Discord payloads; no network
+  python main.py --replay out.json --discord-dry   # iterate on formatting only
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from brief import ROOT, dedupe, gate, memory, render, sources, synth, verify
+from brief import ROOT, deliver, dedupe, gate, memory, render, sources, synth, verify
 
 load_dotenv(override=True)  # override: dotenv cache can serve stale values
 
@@ -56,28 +59,25 @@ def parse_args(argv=None):
                         help="clear the briefed-items history and exit")
     parser.add_argument("--why", metavar="URL",
                         help="print the source snapshot recorded when URL was briefed")
+    parser.add_argument("--post", action="store_true",
+                        help="render and send today's brief to Discord")
+    parser.add_argument("--discord-dry", action="store_true",
+                        help="print the Discord payloads that would be sent; no network")
+    parser.add_argument("--replay", metavar="PATH",
+                        help="render a brief saved with --json; skips the whole pipeline")
+    parser.add_argument("--force", action="store_true",
+                        help="post even if today's brief was already posted")
     return parser.parse_args(argv)
 
 
-def main(argv=None) -> int:
-    args = parse_args(argv)
+def _run_pipeline(args, config):
+    """Ingest through verify.
 
-    if args.forget:
-        memory.save({})
-        print("Cleared briefed-items history.")
-        return 0
-
-    # The snapshot exists to be looked up rather than inferred — a feed that
-    # revises a figure mid-day is how a correct fact gets called a hallucination.
-    if args.why:
-        record = memory.snapshot(memory.load(), args.why)
-        if record is None:
-            print(f"Not in the briefed-items history: {args.why}", file=sys.stderr)
-            return 1
-        print(json.dumps(record, indent=2, ensure_ascii=False))
-        return 0
-
-    config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+    Returns (brief, considered, warnings, flagged) on success, or an int when
+    the caller should stop immediately and return it as-is (0 after --dry
+    printed its listing, 1 on a hard failure) — never raises, so main() keeps
+    a single always-returns-an-int contract.
+    """
     window = config.get("window", {})
     llm_cfg = config.get("llm", {})
 
@@ -140,8 +140,69 @@ def main(argv=None) -> int:
     if not args.no_memory:
         memory.save(memory.prune(memory.record(seen, brief)))
 
-    print(render.as_json(brief) if args.json
-          else render.to_terminal(brief, considered=len(items), warnings=warnings,
+    return brief, len(items), warnings, flagged
+
+
+def _post_to_discord(brief, considered, warnings, flagged, *, force: bool) -> int:
+    if deliver.already_posted_today() and not force:
+        print("Already posted today's brief; use --force to repost.", file=sys.stderr)
+        return 0
+
+    payloads = render.to_discord(brief, considered=considered, warnings=warnings,
+                                 flagged=flagged)
+    ok = deliver.post(payloads)
+    if ok:
+        deliver.mark_posted()
+        print(f"Posted to Discord ({len(payloads)} message(s)).")
+    else:
+        print("Discord delivery failed; the brief was not marked as posted.",
+              file=sys.stderr)
+    return 0 if ok else 1
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+
+    if args.forget:
+        memory.save({})
+        print("Cleared briefed-items history.")
+        return 0
+
+    # The snapshot exists to be looked up rather than inferred — a feed that
+    # revises a figure mid-day is how a correct fact gets called a hallucination.
+    if args.why:
+        record = memory.snapshot(memory.load(), args.why)
+        if record is None:
+            print(f"Not in the briefed-items history: {args.why}", file=sys.stderr)
+            return 1
+        print(json.dumps(record, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.replay:
+        # Skips ingestion, gating, dedupe, synthesis and verification entirely —
+        # the formatting-iteration loop for a renderer, not a real run, so it
+        # must not touch memory or the posted-today marker's underlying brief.
+        text = Path(args.replay).read_text(encoding="utf-8")
+        brief, considered, warnings, flagged = render.replay(text)
+    else:
+        config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+        result = _run_pipeline(args, config)
+        if isinstance(result, int):
+            return result
+        brief, considered, warnings, flagged = result
+
+    if args.discord_dry:
+        payloads = render.to_discord(brief, considered=considered, warnings=warnings,
+                                     flagged=flagged)
+        print(json.dumps(payloads, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.post:
+        return _post_to_discord(brief, considered, warnings, flagged, force=args.force)
+
+    print(render.as_json(brief, considered=considered, warnings=warnings, flagged=flagged)
+          if args.json
+          else render.to_terminal(brief, considered=considered, warnings=warnings,
                                   flagged=flagged))
     return 0
 
