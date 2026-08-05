@@ -1,0 +1,50 @@
+# Tech Brief — iteration 1 (manual, terminal output)
+#
+# Sources are plain RSS. YouTube channels are RSS too — no API key needed:
+#   https://www.youtube.com/feeds/videos.xml?channel_id=<CHANNEL_ID>
+# TLDR has no official feed; it arrives by email. Deferred to iteration 2
+# (Gmail API pull), since the community RSS mirrors are unreliable.
+
+llm:
+  model: "gpt-5.4-mini"
+  temperature: 0.7
+  max_output_tokens: 2000
+
+window:
+  # Only consider items published within this many hours. A daily run wants ~26
+  # (24 + slack); a manual catch-up run wants more. Override with --hours.
+  hours: 36
+  # Per-feed cap before synthesis, newest first. Keeps the prompt bounded.
+  per_feed: 8
+
+# Free-text description of what you care about. This is the ranking filter —
+# the single highest-leverage thing to tune. Be specific; generic interests
+# produce generic commentary.
+interests: |
+  Agentic AI systems, LLM tooling and orchestration, memory/context
+  architectures. Backend and systems engineering (Python, cloud-native,
+  containers, GCP). Developer tooling and infrastructure. Geospatial tech and
+  public-sector digitalisation. AI regulation and governance in the EU.
+  Not interested in: consumer gadget launches, crypto price moves, funding
+  rounds without a technical angle.
+
+sources:
+  - name: "Fireship"
+    kind: "video"
+    url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA"
+
+  - name: "Hacker News"
+    kind: "article"
+    url: "https://hnrss.org/frontpage?points=200"
+
+  - name: "Ars Technica"
+    kind: "article"
+    url: "https://feeds.arstechnica.com/arstechnica/technology-lab"
+
+  - name: "The Register"
+    kind: "article"
+    url: "https://www.theregister.com/headlines.atom"
+
+  - name: "Simon Willison"
+    kind: "article"
+    url: "https://simonwillison.net/atom/everything/"
