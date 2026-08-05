@@ -17,12 +17,13 @@ from ..sources import Item
 from ..synth import Brief, Entry
 from .budget import ALSO_MAX_CHARS
 
-ACCENT = 0xD92B2B       # brand red
-DEGRADED = 0xE8A33D     # amber — a source was lost this run
+ACCENT = 0xD92B2B       # brand red — top signal
+SECONDARY = 0x4C72B0    # blue — horizon section
+DEGRADED = 0xE8A33D     # amber — a source was lost this run or further afield
 META_COLOR = 0x4A4A50   # subdued grey; meta is context, not content
 
 # Discord webhook limits (enforced below, not hoped for).
-MAX_MESSAGE_CHARS = 6000
+MAX_MESSAGE_CHARS = 8500
 MAX_DESCRIPTION = 4096
 MAX_TITLE = 256
 MAX_FOOTER = 2048
@@ -109,7 +110,7 @@ def _header_embed(lost: list[str]) -> dict:
 
 def _today_embed(brief: Brief, flagged: dict[str, list[str]]) -> dict:
     body = "\n\n".join(_top_block(e, flagged) for e in brief.top)
-    return {"title": "Today's Signal", "description": body, "color": ACCENT}
+    return {"title": "Today's Signal", "description": body, "color": ACCENT}  # red
 
 
 def _horizon_embeds(brief: Brief, flagged: dict[str, list[str]]) -> list[dict]:
@@ -142,7 +143,7 @@ def _horizon_embeds(brief: Brief, flagged: dict[str, list[str]]) -> list[dict]:
 
 
 def _horizon_embed(blocks: list[str], *, first: bool) -> dict:
-    embed = {"description": "\n\n".join(blocks), "color": ACCENT}
+    embed = {"description": "\n\n".join(blocks), "color": SECONDARY}  # blue
     if first:
         embed["title"] = "On the Horizon"
     return embed
@@ -152,13 +153,13 @@ def _further_embed(brief: Brief, flagged: dict[str, list[str]]) -> dict | None:
     if brief.video is None:
         return None
     return {"title": "Further Afield", "description": _top_block(brief.video, flagged),
-            "color": ACCENT}
+            "color": DEGRADED}  # amber — calls out as separate from main signal
 
 
 def _meta_embed(brief: Brief) -> dict | None:
     if not brief.meta:
         return None
-    return {"description": f"*{brief.meta}*", "color": META_COLOR}
+    return {"title": "Context", "description": f"*{brief.meta}*", "color": META_COLOR}
 
 
 def _footer_text(considered: int, kept: int, shortfall: str | None,
@@ -194,8 +195,8 @@ def _paginate(embeds: list[dict]) -> list[dict]:
         current_chars += chars
     if current:
         messages.append(current)
-    # flags: 4 = SUPPRESS_EMBEDS, so eight auto-previews don't bury the brief.
-    return [{"embeds": m, "flags": 4} for m in messages]
+    # Filter out empty message lists to prevent posting blank messages.
+    return [{"embeds": m} for m in messages if m]
 
 
 def to_discord(brief: Brief, *, considered: int, warnings: list[str],
@@ -230,5 +231,10 @@ def to_discord(brief: Brief, *, considered: int, warnings: list[str],
             embed["title"] = embed["title"][:MAX_TITLE]
         if "description" in embed:
             embed["description"] = embed["description"][:MAX_DESCRIPTION]
+
+    # Filter out embeds with no title and no description
+    embeds = [e for e in embeds
+              if e.get("title") or e.get("description")
+              or e.get("author") or e.get("footer")]
 
     return _paginate(embeds)
