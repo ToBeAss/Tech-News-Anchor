@@ -94,7 +94,14 @@ def _fetch(url: str) -> tuple[bytes | None, str | None]:
     return None, f"{last} (after {FETCH_RETRIES + 1} attempts)"
 
 
-def _clean(raw: str | None, limit: int = 600) -> str:
+# Feeds differ wildly in how much they give: Simon Willison and arXiv fill 600
+# and get cut, while The Register and Ars hard-truncate their own summaries at
+# ~100 chars and lobste.rs supplies ~8. Raising this only helps the first group;
+# the rest need the article fetched. Cheap either way — few items are long.
+SUMMARY_CHARS = 2000
+
+
+def _clean(raw: str | None, limit: int = SUMMARY_CHARS) -> str:
     if not raw:
         return ""
     text = html.unescape(_TAG_RE.sub(" ", raw))

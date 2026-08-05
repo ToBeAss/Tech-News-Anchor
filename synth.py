@@ -26,6 +26,7 @@ class Entry:
     item: Item
     headline: str
     comment: str
+    fact: str = ""      # what happened; empty for tier two, which carries it in the headline
 
 
 # Fixed shape: the brief is always 3 + 5. Locked counts make the output
@@ -50,6 +51,9 @@ engineer. You are given today's candidate stories, each tagged with an id.
 
 Your job is NOT to summarise everything. It is to filter hard, then say \
 something worth reading about what survives.
+
+Who this is for:
+{audience}
 
 The reader's interests:
 {interests}
@@ -83,24 +87,66 @@ Do not discount an item because it is short, in another language, or from a \
 smaller outlet \u2014 a local instance of a global story usually matters more \
 to this reader than the global one. If you include the global version, \
 prefer the local version instead where both are present.
+- Use the audience context to judge SECOND-ORDER relevance \u2014 what this \
+reader will have to reason about, argue for, or build in the next year. A \
+story about another country's public-sector procurement, a standards change, \
+or a regulatory precedent can be highly relevant without naming their \
+organisation or sector.
+- Do NOT turn the audience context into a topic filter. Their field is a lens, \
+not a subject requirement. Never force a connection to their organisation into \
+the commentary, and never pick a weak item because it is superficially \
+on-sector over a strong one that is not.
 - Never invent stories. Only use ids from the supplied list.
 
 ## Writing
-- Commentary must earn its place: why this matters, what it conflicts with, \
-what the second-order effect is. Never restate the headline in different \
-words. Never write filler like "this is significant as AI advances rapidly".
+- Every top_signal entry has TWO parts, and both are required:
+  * "fact" \u2014 what actually happened, in one sentence. Name the actor and \
+carry the specific detail: the number, the version, the claim, the decision. \
+A reader who only reads this sentence should know the news. Do not editorialise \
+here.
+    MERGED ITEMS: when an item is marked "SAME STORY, also covered by", the \
+other coverage may describe a DIFFERENT PART of the same chain \u2014 a \
+different contract, party, or layer of the same deal. Do not merge their \
+figures or attach one source's party to another source's number. Attribute \
+every figure to the specific parties it belongs to, and if the layers matter, \
+name them ("A's $10bn deal with B, which in turn contracted C for $4.7bn"). \
+Two numbers that look contradictory are usually two different agreements.
+    HEDGING: preserve the source's certainty exactly. If it says "trolig", \
+"reportedly", "says it has", "is believed to", or attributes a claim to \
+someone, your sentence must carry the same hedge and the same attribution. \
+"Anthropic signed" is wrong where the source said Anthropic is probably the \
+customer; "reporting points to Anthropic" is right. Stripping a hedge turns a \
+claim into a fabrication even when every word came from the source.
+    GROUNDING (absolute): state ONLY details that appear in the supplied title \
+or summary for that item. You are working from a headline and a short extract, \
+not the article. If a figure, version, date, name or list of provisions is not \
+in the text you were given, you do NOT know it \u2014 do not supply it, do not \
+infer it, do not reconstruct it from memory. Write around the gap instead: \
+"a multi-billion-kroner contract" is correct where the amount is absent, and a \
+confident wrong number is a serious failure. The same applies to headlines and \
+to any figure in a comment.
+  * "comment" \u2014 why it matters, what it conflicts with, the second-order \
+effect. Do not restate the fact. Do not write filler like "this is significant \
+as AI advances rapidly".
+- If you cannot state a concrete fact, you do not understand the item well \
+enough to rank it highly \u2014 move it down.
 - Have opinions. Skepticism is welcome. Flag vendor announcements as vendor \
 announcements \u2014 the origin domain tells you when a story is a company \
 talking about itself.
-- Write your own headline for each entry \u2014 terse, concrete, no clickbait.
+- Write your own headline for each entry \u2014 terse, concrete, no clickbait. \
+Headlines must be FACTUAL, not thematic: name who did what. "Norway funds AI \
+centres it cannot staff, says digi.no op-ed" is right; "Norway's AI talent \
+bottleneck resurfaces" is wrong \u2014 it names a theme and tells the reader \
+nothing. This matters most in also_worth_knowing, where the headline carries \
+the news because the one-line comment has no room for it.
 - Always write in English, whatever language the source is in. Where a source \
 is non-English, do not let a short or untranslated summary count against the \
 item's importance.
 
 ## Budget (hard limits \u2014 the brief must stay under a 3 minute read)
-- top_signal: EXACTLY 3 entries. Not 2, not 4. comment 45-65 words. This tier \
-gets the depth.
-- also_worth_knowing: EXACTLY 5 entries. comment MAX 18 WORDS \u2014 count them. One \
+- top_signal: EXACTLY 3 entries. Not 2, not 4. fact 20-30 words (one \
+sentence). comment 40-55 words. This tier gets the depth.
+- also_worth_knowing: EXACTLY 5 entries. comment MAX 25 WORDS \u2014 count them. One \
 sentence, and it must END, not trail off. This tier is scannable, not \
 readable. If an item needs more than one line to justify, it belongs in \
 top_signal or nowhere.
@@ -115,15 +161,16 @@ of the brief.
 
 Output STRICT JSON, nothing else \u2014 no prose, no markdown fences:
 {{
-  "top_signal": [{{"id": "iNN", "headline": "...", "comment": "..."}}],
+  "top_signal": [{{"id": "iNN", "headline": "...", "fact": "...", "comment": "..."}}],
   "also_worth_knowing": [{{"id": "iNN", "headline": "...", "comment": "..."}}],
-  "video": {{"id": "iNN", "headline": "...", "comment": "..."}} or null,
+  "video": {{"id": "iNN", "headline": "...", "fact": "...", "comment": "..."}} or null,
   "meta_note": "..." or null
 }}"""
 
 
-def build(items: list[Item], interests: str, priorities: str = "", *, model=None,
-          temperature=None, max_output_tokens=None) -> Brief:
+def build(items: list[Item], interests: str, priorities: str = "",
+          audience: str = "", *, model=None, temperature=None,
+          max_output_tokens=None) -> Brief:
     if not items:
         raise SynthError("no items to synthesise")
 
@@ -131,6 +178,7 @@ def build(items: list[Item], interests: str, priorities: str = "", *, model=None
     raw = llm.generate(
         [{"role": "user", "content": f"Today's candidates:\n\n{catalogue}"}],
         instructions=_SYSTEM.format(
+            audience=(audience or "(not specified)").strip(),
             interests=interests.strip(),
             priorities=(priorities or "(none)").strip(),
         ),
@@ -167,6 +215,7 @@ def _entry(node: Any, index: dict[str, Item]) -> Entry | None:
         item=item,
         headline=str(node.get("headline") or item.title).strip(),
         comment=str(node.get("comment") or "").strip(),
+        fact=str(node.get("fact") or "").strip(),
     )
 
 

@@ -22,6 +22,7 @@ import memory
 import render
 import sources
 import synth
+import verify
 
 load_dotenv(override=True)  # override: dotenv cache can serve stale values
 
@@ -32,11 +33,19 @@ def load_config(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def model_for(llm_cfg: dict, stage: str, override: str | None) -> str | None:
+    """CLI override wins, then the per-stage setting, then the global default."""
+    if override:
+        return override
+    return (llm_cfg.get("stages") or {}).get(stage) or llm_cfg.get("model")
+
+
 def as_json(brief: synth.Brief) -> str:
     def node(entry):
         return {
             "id": entry.item.id,
             "headline": entry.headline,
+            "fact": entry.fact,
             "comment": entry.comment,
             "source": {"name": entry.item.source, "url": entry.item.url},
             "title": entry.item.title,
@@ -57,7 +66,7 @@ def main() -> int:
                         help="ingest and list only; no LLM call")
     parser.add_argument("--hours", type=int, help="override the lookback window")
     parser.add_argument("--per-feed", type=int, help="override per-feed item cap")
-    parser.add_argument("--model", help="override the model")
+    parser.add_argument("--model", help="override the model for every stage")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of prose")
     parser.add_argument("--no-dedupe", action="store_true",
                         help="skip the duplicate-clustering pre-pass")
@@ -89,7 +98,7 @@ def main() -> int:
     if not args.no_gate:
         items, gate_warnings = gate.apply(
             items, sources.gate_rules(config["sources"]),
-            model=args.model or llm_cfg.get("model"),
+            model=model_for(llm_cfg, "gate", args.model),
         )
         warnings.extend(gate_warnings)
 
@@ -106,7 +115,7 @@ def main() -> int:
         return 0
 
     if not args.no_dedupe:
-        items, note = dedupe.merge(items, model=args.model or llm_cfg.get("model"))
+        items, note = dedupe.merge(items, model=model_for(llm_cfg, "dedupe", args.model))
         if note:
             warnings.append(note)
 
@@ -121,7 +130,8 @@ def main() -> int:
             items,
             config["interests"],
             config.get("priorities", ""),
-            model=args.model or llm_cfg.get("model"),
+            config.get("audience", ""),
+            model=model_for(llm_cfg, "synthesis", args.model),
             temperature=llm_cfg.get("temperature"),
             max_output_tokens=llm_cfg.get("max_output_tokens"),
         )
@@ -129,11 +139,17 @@ def main() -> int:
         print(f"Synthesis failed: {exc}", file=sys.stderr)
         return 1
 
+    # Verify before recording: an unverifiable figure should not be silently
+    # committed to history as "already covered".
+    flagged, fact_warnings = verify.check(brief)
+    warnings.extend(fact_warnings)
+
     if not args.no_memory:
         memory.save(memory.prune(memory.record(memory.load(), brief)))
 
     print(as_json(brief) if args.json
-          else render.to_terminal(brief, considered=len(items), warnings=warnings))
+          else render.to_terminal(brief, considered=len(items), warnings=warnings,
+                                  flagged=flagged))
     return 0
 
 

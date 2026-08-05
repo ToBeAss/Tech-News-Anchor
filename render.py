@@ -41,7 +41,10 @@ def _rule(label: str) -> str:
     return "\n" + BOLD(label) + "\n" + DIM("─" * _width())
 
 
-ALSO_MAX_CHARS = 140  # renderer-enforced; prompts drift under pressure
+# ~25 words. The renderer clip is a backstop, not the budget: it sits slightly
+# above the prompt limit so a well-behaved entry is never cut mid-thought, and
+# only genuine overruns get truncated.
+ALSO_MAX_CHARS = 190
 
 
 def _clip(text: str, limit: int) -> str:
@@ -51,17 +54,28 @@ def _clip(text: str, limit: int) -> str:
     return cut.rstrip(",;:.\u2014- ") + "\u2026"
 
 
-def _entry(entry: Entry, *, terse: bool = False) -> str:
+def _entry(entry: Entry, *, terse: bool = False, flags: list[str] | None = None) -> str:
     """terse = tier two: one clipped line, so the hierarchy stays visible."""
     lines = [f" {BOLD(entry.headline)}"]
-    if entry.comment:
-        comment = _clip(entry.comment, ALSO_MAX_CHARS) if terse else entry.comment
-        lines.append(_wrap(comment))
+    if terse:
+        if entry.comment:
+            lines.append(_wrap(_clip(entry.comment, ALSO_MAX_CHARS)))
+    else:
+        # Fact and take are separate fields so the model must produce both, but
+        # they're joined here — a reader wants a paragraph, not a labelled form.
+        body = " ".join(p for p in (entry.fact, entry.comment) if p)
+        if body:
+            lines.append(_wrap(body))
     lines.append(DIM(f"   {entry.item.origin} \u00b7 ") + CYAN(entry.item.url))
     # Merged duplicates keep their links: the other outlet's angle is often
     # worth reading even though it doesn't deserve its own slot.
     for origin, _title, url in entry.item.related:
         lines.append(DIM(f"   also {origin} \u00b7 ") + CYAN(url))
+    if flags:
+        # Marked inline, next to the claim, not only in a footer — an unverified
+        # figure must be visible at the moment it is read.
+        lines.append(YELLOW(f"   \u26a0 unverified figure(s): {', '.join(flags)} "
+                            "\u2014 check the source before quoting"))
     return "\n".join(lines) + ("" if terse else "\n")
 
 
@@ -70,7 +84,9 @@ def _degraded(warnings: list[str]) -> list[str]:
     return [w for w in warnings if "UNREACHABLE" in w]
 
 
-def to_terminal(brief: Brief, *, considered: int, warnings: list[str]) -> str:
+def to_terminal(brief: Brief, *, considered: int, warnings: list[str],
+                flagged: dict[str, list[str]] | None = None) -> str:
+    flagged = flagged or {}
     lost = _degraded(warnings)
     out = [
         "",
@@ -90,16 +106,16 @@ def to_terminal(brief: Brief, *, considered: int, warnings: list[str]) -> str:
 
     if brief.top:
         out.append(_rule("🔥 TOP SIGNAL"))
-        out += [_entry(e) for e in brief.top]
+        out += [_entry(e, flags=flagged.get(e.item.id)) for e in brief.top]
 
     if brief.also:
         out.append(_rule("📎 ALSO WORTH KNOWING"))
-        out += [_entry(e, terse=True) for e in brief.also]
+        out += [_entry(e, terse=True, flags=flagged.get(e.item.id)) for e in brief.also]
         out.append("")
 
     if brief.video:
         out.append(_rule("🎥 VIDEO"))
-        out.append(_entry(brief.video))
+        out.append(_entry(brief.video, flags=flagged.get(brief.video.item.id)))
 
     if brief.meta:
         out.append(_rule("💭 META"))

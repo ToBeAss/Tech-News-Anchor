@@ -16,9 +16,24 @@
 #   exclude:    keyword blocklist, applied first; e.g. paywall markers
 
 llm:
+  # Default for any stage without an override below.
   model: "gpt-5.4"
   temperature: 0.7
   max_output_tokens: 2000
+
+  # Per-stage models. Different jobs need different capability:
+  #   synthesis — ranking, relevance judgement, and writing. This is where the
+  #               capable model earns its cost; mini produced visibly flatter
+  #               commentary and missed cross-domain relevance.
+  #   dedupe    — grouping same-event items. Mostly matching, BUT it has to spot
+  #               that two headlines sharing no words and written in different
+  #               languages are one story. Verify before trusting mini here.
+  #   gate      — binary on-topic classification from title + description. The
+  #               easiest job in the pipeline; mini is ample.
+  stages:
+    synthesis: "gpt-5.4"
+    dedupe: "gpt-5.4"
+    gate: "gpt-5.4-mini"
 
 # Items already briefed are remembered in state/seen.json and excluded from
 # later runs, so a wide window does not resurface the same stories daily.
@@ -29,6 +44,37 @@ memory:
 window:
   hours: 36
   per_feed: 12
+
+# Who the brief is for. This is context for JUDGEMENT, not a topic filter —
+# it lets the model reason about second-order relevance (a standards change or
+# a foreign procurement precedent can matter without naming your sector).
+# EDIT THIS: the details below are a starting draft, not verified facts about
+# your team. The more specific and honest it is, the better the ranking.
+#
+# When delivery splits into Discord (personal) and Teams (work), this block is
+# the natural thing to fork — same pipeline, two audience descriptions.
+audience: |
+  A small innovation team inside Kartverket, the Norwegian Mapping Authority —
+  a state agency responsible for national geodata, the cadastre, the land
+  register, sea charts and geodesy. The team explores emerging technology and
+  advises on what the organisation should pay attention to, so its interest is
+  practical and forward-looking rather than academic.
+
+  What this means for relevance:
+  - Public-sector constraints are real: procurement rules, data protection,
+    long service lifetimes, accessibility and archiving requirements, and an
+    obligation to justify technology choices publicly.
+  - Sovereignty and dependency matter more than for a private company. Where
+    data and compute physically sit, and how hard a vendor is to leave, are
+    first-order questions, not footnotes.
+  - Geospatial and location data are the domain: standards, formats, open
+    data policy, and how AI systems consume and misuse spatial data.
+  - EU and Norwegian regulation lands on this team directly — the AI Act,
+    Data Act, INSPIRE, and national digitalisation policy.
+  - Other public bodies' experiences (in Norway, the Nordics, or the wider EU)
+    are directly transferable evidence. Treat them as such.
+  - The reader is technical: a developer who builds, not only evaluates.
+    Concrete engineering detail is welcome and does not need simplifying.
 
 interests: |
   Agentic AI systems, LLM tooling and orchestration, memory/context

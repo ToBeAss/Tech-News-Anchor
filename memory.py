@@ -64,11 +64,41 @@ def filter_unseen(items: list, seen: dict[str, Any]):
     return kept, dropped
 
 
+SNAPSHOT_CHARS = 400        # enough to audit a claim; small enough to keep forever
+
+
 def record(seen: dict[str, Any], brief) -> dict[str, Any]:
-    """Mark everything in a delivered brief as covered."""
+    """Mark everything in a delivered brief as covered, with a snapshot of the
+    source text as it read at the time.
+
+    The snapshot exists because feeds mutate. digi.no revised a contract figure
+    from 55 to 38 milliarder between two runs on the same day, and the URL slug
+    still carried the original number. Without a snapshot there is no way to
+    answer "what did the model actually see when it wrote that?" — you end up
+    inferring it from a slug, which is exactly how a correct fact gets
+    misdiagnosed as a hallucination.
+
+    Also records what was written, so a published claim can be traced back to
+    the text it came from.
+    """
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     entries = [*brief.top, *brief.also] + ([brief.video] if brief.video else [])
     for entry in entries:
+        record = {
+            "briefed_at": now,
+            "title": entry.item.title[:200],
+            "summary": (entry.item.summary or "")[:SNAPSHOT_CHARS],
+            "wrote": {
+                "headline": entry.headline,
+                "fact": entry.fact,
+                "comment": entry.comment,
+            },
+        }
         for url in (entry.item.url, *(u for _o, _t, u in entry.item.related)):
-            seen[url] = {"briefed_at": now, "title": entry.item.title[:120]}
+            seen[url] = record
     return seen
+
+
+def snapshot(seen: dict[str, Any], url: str) -> dict[str, Any] | None:
+    """What the source said, and what was written about it, when it was briefed."""
+    return seen.get(url)
