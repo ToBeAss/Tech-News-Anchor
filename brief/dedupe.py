@@ -20,11 +20,10 @@ a second line of defence.
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from dataclasses import replace
 
-import llm
-from sources import Item
+from . import llm
+from .sources import Item
 
 _SYSTEM = """You group news items that cover the SAME underlying event.
 
@@ -37,25 +36,13 @@ Group ONLY items that a reader would consider the same story. Do NOT group \
 items that merely share a topic, a company, or a theme. Two separate attacks \
 on the same organisation are one story if they are the same reported incident, \
 and two stories if they are distinct events. A local instance of a global \
-trend is NOT the same story as the global one \u2014 do not group them.
+trend is NOT the same story as the global one — do not group them.
 
-Output STRICT JSON, nothing else \u2014 no prose, no markdown fences:
+Output STRICT JSON, nothing else — no prose, no markdown fences:
 {"groups": [["i03", "i17"], ["i08", "i22", "i30"]]}
 
 Only include groups of 2 or more. If nothing should be grouped, output \
 {"groups": []}. Never invent ids."""
-
-
-def _parse(raw: str) -> dict[str, Any]:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lstrip().lower().startswith("json"):
-            text = text.lstrip()[4:]
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError(f"no JSON object: {raw[:200]}")
-    return json.loads(text[start:end + 1])
 
 
 def _valid_groups(data: dict, index: dict[str, Item]) -> list[list[str]]:
@@ -90,33 +77,23 @@ def merge(items: list[Item], *, model=None, max_output_tokens: int = 500):
             model=model,
             max_output_tokens=max_output_tokens,
         )
-        groups = _valid_groups(_parse(raw), {i.id: i for i in items})
+        groups = _valid_groups(llm.parse_json(raw), {i.id: i for i in items})
     except Exception as exc:
         return items, f"dedupe skipped: {exc}"
 
     if not groups:
         return items, None
 
-    lead_of: dict[str, str] = {}
-    followers: dict[str, list[Item]] = {}
     index = {i.id: i for i in items}
-    for group in groups:
-        lead = group[0]
-        followers[lead] = [index[i] for i in group[1:]]
-        for member in group[1:]:
-            lead_of[member] = lead
+    followers: dict[str, list[Item]] = {g[0]: [index[i] for i in g[1:]] for g in groups}
+    absorbed = {i for group in groups for i in group[1:]}
 
     merged: list[Item] = []
     for item in items:
-        if item.id in lead_of:
+        if item.id in absorbed:
             continue
         extra = followers.get(item.id)
-        if extra:
-            item = Item(
-                **{**item.__dict__,
-                   "related": tuple((e.origin, e.title, e.url) for e in extra)}
-            )
-        merged.append(item)
+        merged.append(replace(item, related=tuple(extra)) if extra else item)
 
     collapsed = len(items) - len(merged)
     return merged, (f"merged {collapsed} duplicate item(s) into "

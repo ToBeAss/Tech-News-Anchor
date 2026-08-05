@@ -1,6 +1,6 @@
 """Cross-run memory — what has already been briefed.
 
-The window overlaps between runs (36h, or 168h if you widen it), so every run
+The window overlaps between runs (48h, or 168h if you widen it), so every run
 re-sees most of the previous run's candidates. Without this, a recurring story
 resurfaces daily with freshly-written commentary, and a pinned video slot would
 show the same Fireship upload for a week.
@@ -17,14 +17,16 @@ than anti-repetition, which is a stronger and simpler check.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-STATE_DIR = Path(__file__).resolve().parent / "state"
+from . import ROOT
+
+STATE_DIR = ROOT / "state"
 SEEN_PATH = STATE_DIR / "seen.json"
 
 RETENTION_DAYS = 30     # prune entries older than this; well past any window
+SNAPSHOT_CHARS = 400    # enough to audit a claim; small enough to keep forever
 
 
 def load() -> dict[str, Any]:
@@ -56,15 +58,16 @@ def filter_unseen(items: list, seen: dict[str, Any]):
     """
     kept, dropped = [], 0
     for item in items:
-        urls = {item.url, *(u for _o, _t, u in item.related)}
-        if urls & seen.keys():
+        if _urls(item) & seen.keys():
             dropped += 1
             continue
         kept.append(item)
     return kept, dropped
 
 
-SNAPSHOT_CHARS = 400        # enough to audit a claim; small enough to keep forever
+def _urls(item) -> set[str]:
+    """Every link that should be considered covered once this item is briefed."""
+    return {item.url, *(r.url for r in item.related)}
 
 
 def record(seen: dict[str, Any], brief) -> dict[str, Any]:
@@ -76,15 +79,14 @@ def record(seen: dict[str, Any], brief) -> dict[str, Any]:
     still carried the original number. Without a snapshot there is no way to
     answer "what did the model actually see when it wrote that?" — you end up
     inferring it from a slug, which is exactly how a correct fact gets
-    misdiagnosed as a hallucination.
+    misdiagnosed as a hallucination. `main.py --why <url>` reads it back.
 
     Also records what was written, so a published claim can be traced back to
     the text it came from.
     """
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    entries = [*brief.top, *brief.also] + ([brief.video] if brief.video else [])
-    for entry in entries:
-        record = {
+    for entry in brief.entries():
+        snapshot = {
             "briefed_at": now,
             "title": entry.item.title[:200],
             "summary": (entry.item.summary or "")[:SNAPSHOT_CHARS],
@@ -94,8 +96,8 @@ def record(seen: dict[str, Any], brief) -> dict[str, Any]:
                 "comment": entry.comment,
             },
         }
-        for url in (entry.item.url, *(u for _o, _t, u in entry.item.related)):
-            seen[url] = record
+        for url in _urls(entry.item):
+            seen[url] = snapshot
     return seen
 
 

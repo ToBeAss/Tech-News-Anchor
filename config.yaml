@@ -37,14 +37,9 @@ llm:
 
 # Items already briefed are remembered in state/seen.json and excluded from
 # later runs, so a wide window does not resurface the same stories daily.
-# `--no-memory` ignores it for a run; `--forget` clears it.
-memory:
-  retention_days: 30
-
-# Tier-two layout. "flat" = exactly 5 entries. "categories" = 2-4 model-chosen
-# groups of 2-3, 6-9 total, so a longer list still skims. Top signal is never
-# categorised. Override per run with --categories / --flat.
-layout: "categories"
+# `--no-memory` ignores it for a run, `--forget` clears it, and
+# `--why <url>` prints what a briefed item said at the time.
+# Retention is fixed at 30 days in brief/memory.py — well past any window.
 
 window:
   # Deliberately wider than the daily publishing cadence. With memory on, the

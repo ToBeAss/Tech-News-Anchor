@@ -19,17 +19,15 @@ silently discarded item is gone for good.
 
 from __future__ import annotations
 
-import json
-
-import llm
-from sources import Item
+from . import llm
+from .sources import Item
 
 _SYSTEM = """You decide which items from a noisy feed are relevant.
 
 You are given items with an id, title, and description, plus a relevance rule. \
 Return the ids that satisfy the rule.
 
-Judge on the description as much as the title \u2014 titles are often vague or \
+Judge on the description as much as the title — titles are often vague or \
 clickbait, and the description usually reveals the actual subject. When the \
 evidence is genuinely ambiguous, KEEP the item: a later ranking step will \
 drop it if it turns out to be weak, but an item rejected here is gone.
@@ -37,25 +35,10 @@ drop it if it turns out to be weak, but an item rejected here is gone.
 Relevance rule:
 {rule}
 
-Output STRICT JSON, nothing else \u2014 no prose, no markdown fences:
+Output STRICT JSON, nothing else — no prose, no markdown fences:
 {{"keep": ["i04", "i11"]}}
 
 If nothing qualifies, output {{"keep": []}}. Never invent ids."""
-
-
-def _parse_keep(raw: str) -> list[str]:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lstrip().lower().startswith("json"):
-            text = text.lstrip()[4:]
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError(f"no JSON object: {raw[:200]}")
-    keep = json.loads(text[start:end + 1]).get("keep")
-    if not isinstance(keep, list):
-        raise ValueError("'keep' is not a list")
-    return [str(i).strip() for i in keep]
 
 
 def apply(items: list[Item], gates: dict[str, str], *, model=None):
@@ -81,7 +64,10 @@ def apply(items: list[Item], gates: dict[str, str], *, model=None):
                 model=model,
                 max_output_tokens=300,
             )
-            keep = set(_parse_keep(raw))
+            keep = llm.parse_json(raw).get("keep")
+            if not isinstance(keep, list):
+                raise ValueError("'keep' is not a list")
+            keep = {str(i).strip() for i in keep}
         except Exception as exc:
             warnings.append(f"{source}: gate failed, keeping all ({exc})")
             survivors.extend(candidates)
@@ -93,7 +79,8 @@ def apply(items: list[Item], gates: dict[str, str], *, model=None):
         if dropped:
             warnings.append(f"{source}: gate dropped {dropped}/{len(candidates)} as off-topic")
 
-    # Preserve the original ingestion order; ids are reassigned by the caller.
+    # Restore ingestion order: gated sources were pulled out and appended, and
+    # ids are never reassigned, so without this the listing jumps around.
     order = {item.id: n for n, item in enumerate(items)}
     survivors.sort(key=lambda i: order[i.id])
     return survivors, warnings

@@ -4,6 +4,10 @@ Lifted from the QOTD project. Kept deliberately thin: one generate() that takes
 instructions (system) separately from input (turn content), and a defensive text
 extractor that walks the output array instead of blind-indexing, since reasoning
 items can interleave with the message item.
+
+Every failure out of this module is an LLMError, including transport errors —
+callers decide fail-open (gate, dedupe) or fatal (synthesis) and should not have
+to know that `requests` exceptions exist.
 """
 
 from __future__ import annotations
@@ -48,7 +52,10 @@ def generate(
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    resp = requests.post(OPENAI_URL, headers=headers, json=payload, timeout=timeout)
+    try:
+        resp = requests.post(OPENAI_URL, headers=headers, json=payload, timeout=timeout)
+    except requests.RequestException as exc:
+        raise LLMError(f"request failed: {exc}") from exc
     if resp.status_code >= 400:
         raise LLMError(f"API {resp.status_code}: {resp.text[:400]}")
     return _extract_text(resp.json())
@@ -71,3 +78,24 @@ def _extract_text(data: dict[str, Any]) -> str:
     if not text:
         raise LLMError(f"no text found in response: {json.dumps(data)[:300]}")
     return text
+
+
+def parse_json(raw: str) -> dict[str, Any]:
+    """Extract the JSON object from a model response.
+
+    Every stage asks for bare JSON and every stage occasionally gets it wrapped
+    in a markdown fence or trailed by a sentence, so slice to the outermost
+    braces rather than trusting the instruction to hold.
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lstrip().lower().startswith("json"):
+            text = text.lstrip()[4:]
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1:
+        raise LLMError(f"no JSON object in output: {raw[:200]}")
+    try:
+        return json.loads(text[start:end + 1])
+    except json.JSONDecodeError as exc:
+        raise LLMError(f"JSON parse failed: {exc}: {raw[:200]}") from exc

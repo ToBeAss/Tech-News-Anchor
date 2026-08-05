@@ -1,9 +1,10 @@
-"""Tech Brief — iteration 1. Manual run, terminal output.
+"""Tech Brief — manual run, terminal output.
 
-  python main.py                 # fetch, synthesise, print
-  python main.py --dry           # ingestion only, no LLM call (free)
+  python main.py                 # fetch, gate, dedupe, synthesise, print
+  python main.py --dry           # ingestion + gate only, no synthesis call
   python main.py --hours 72      # widen the window for a catch-up run
   python main.py --json          # machine-readable, for piping/inspection
+  python main.py --why <url>     # what a briefed item said when it was briefed
 """
 
 from __future__ import annotations
@@ -16,21 +17,16 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-import dedupe
-import gate
-import memory
-import render
-import sources
-import synth
-import verify
+from brief import ROOT, dedupe, gate, memory, render, sources, synth, verify
 
 load_dotenv(override=True)  # override: dotenv cache can serve stale values
 
-ROOT = Path(__file__).resolve().parent
-
-
-def load_config(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+# Windows consoles still default to a legacy code page, and the renderer's box
+# drawing, emoji and en-dashes raise UnicodeEncodeError there — the brief dies
+# at the print, after every LLM call has already been paid for.
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def model_for(llm_cfg: dict, stage: str, override: str | None) -> str | None:
@@ -40,41 +36,16 @@ def model_for(llm_cfg: dict, stage: str, override: str | None) -> str | None:
     return (llm_cfg.get("stages") or {}).get(stage) or llm_cfg.get("model")
 
 
-def as_json(brief: synth.Brief) -> str:
-    def node(entry):
-        return {
-            "id": entry.item.id,
-            "headline": entry.headline,
-            "fact": entry.fact,
-            "comment": entry.comment,
-            "source": {"name": entry.item.source, "url": entry.item.url},
-            "title": entry.item.title,
-        }
-    return json.dumps({
-        "top_signal": [node(e) for e in brief.top],
-        "also_worth_knowing": (
-            [{"category": n, "entries": [node(e) for e in es]} for n, es in brief.groups]
-            if brief.groups else [node(e) for e in brief.also]
-        ),
-        "video": node(brief.video) if brief.video else None,
-        "meta_note": brief.meta,
-    }, indent=2, ensure_ascii=False)
-
-
-def main() -> int:
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=str(ROOT / "config.yaml"))
     parser.add_argument("--dry", action="store_true",
-                        help="ingest and list only; no LLM call")
+                        help="ingest and list only; no synthesis call")
     parser.add_argument("--hours", type=int, help="override the lookback window")
     parser.add_argument("--per-feed", type=int, help="override per-feed item cap")
     parser.add_argument("--model", help="override the model for every stage")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of prose")
-    parser.add_argument("--categories", action="store_true",
-                        help="group tier two into categories (6-9 items)")
-    parser.add_argument("--flat", action="store_true",
-                        help="flat tier two of exactly 5 (overrides config)")
     parser.add_argument("--no-dedupe", action="store_true",
                         help="skip the duplicate-clustering pre-pass")
     parser.add_argument("--no-gate", action="store_true",
@@ -83,27 +54,41 @@ def main() -> int:
                         help="ignore and do not update the briefed-items history")
     parser.add_argument("--forget", action="store_true",
                         help="clear the briefed-items history and exit")
-    args = parser.parse_args()
+    parser.add_argument("--why", metavar="URL",
+                        help="print the source snapshot recorded when URL was briefed")
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
 
     if args.forget:
         memory.save({})
         print("Cleared briefed-items history.")
         return 0
 
-    config = load_config(Path(args.config))
+    # The snapshot exists to be looked up rather than inferred — a feed that
+    # revises a figure mid-day is how a correct fact gets called a hallucination.
+    if args.why:
+        record = memory.snapshot(memory.load(), args.why)
+        if record is None:
+            print(f"Not in the briefed-items history: {args.why}", file=sys.stderr)
+            return 1
+        print(json.dumps(record, indent=2, ensure_ascii=False))
+        return 0
+
+    config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     window = config.get("window", {})
     llm_cfg = config.get("llm", {})
-    layout = "flat" if args.flat else (args.categories and "categories"
-                                       or config.get("layout", "flat"))
 
     items, warnings = sources.collect(
         config["sources"],
-        hours=args.hours or window.get("hours", 36),
-        per_feed=args.per_feed or window.get("per_feed", 8),
+        hours=args.hours or window.get("hours", 48),
+        per_feed=args.per_feed or window.get("per_feed", 12),
     )
 
-    # Relevance gate runs before --dry so the listing reflects what synthesis
-    # will actually see. --no-gate skips it (and its cost) for pure ingestion checks.
+    # Gate and memory both run before --dry so the dry listing reflects the real
+    # candidate pool, not everything ingestion happened to find.
     if not args.no_gate:
         items, gate_warnings = gate.apply(
             items, sources.gate_rules(config["sources"]),
@@ -111,8 +96,6 @@ def main() -> int:
         )
         warnings.extend(gate_warnings)
 
-    # Memory filter: drop what previous runs already briefed. Runs before --dry
-    # so the listing reflects the real candidate pool.
     seen = {} if args.no_memory else memory.load()
     if seen:
         items, already = memory.filter_unseen(items, seen)
@@ -140,24 +123,24 @@ def main() -> int:
             config["interests"],
             config.get("priorities", ""),
             config.get("audience", ""),
-            categorised=layout == "categories",
             model=model_for(llm_cfg, "synthesis", args.model),
             temperature=llm_cfg.get("temperature"),
             max_output_tokens=llm_cfg.get("max_output_tokens"),
         )
-    except (synth.SynthError, Exception) as exc:
+    except synth.SynthError as exc:
         print(f"Synthesis failed: {exc}", file=sys.stderr)
         return 1
 
-    # Verify before recording: an unverifiable figure should not be silently
-    # committed to history as "already covered".
+    # Promote before verifying and before recording: promotion changes which URL
+    # ships, and both the flags and the stored snapshot must describe that URL.
+    brief = verify.promote_leads(brief)
     flagged, fact_warnings = verify.check(brief)
     warnings.extend(fact_warnings)
 
     if not args.no_memory:
-        memory.save(memory.prune(memory.record(memory.load(), brief)))
+        memory.save(memory.prune(memory.record(seen, brief)))
 
-    print(as_json(brief) if args.json
+    print(render.as_json(brief) if args.json
           else render.to_terminal(brief, considered=len(items), warnings=warnings,
                                   flagged=flagged))
     return 0
