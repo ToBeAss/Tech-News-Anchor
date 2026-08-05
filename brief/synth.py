@@ -207,6 +207,11 @@ category, and never invent a category to justify one story.
 - MINIMUM 2 entries per category. A category with one entry is a headline with \
 extra formatting — if only one item fits a theme, put it in a broader \
 category or drop it.
+- PREFER FEWER, FULLER categories. Three groups of three beats four groups of \
+two — a two-item group is barely a group, and maximising category COUNT over \
+category SUBSTANCE is how an item ends up filed somewhere it barely fits just \
+to keep a group above the minimum. Never create a group you can only fill by \
+stretching an item's fit; merge it into a broader category instead.
 - 2-4 categories. Above that you are back to a flat list.
 - Order categories by the importance of their contents, so the first block is \
 the one worth reading first. Order entries within a category the same way.

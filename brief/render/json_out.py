@@ -13,9 +13,14 @@ that a renderer would use.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from ..sources import Item
 from ..synth import Brief, Entry
+
+
+def _parse_published(raw: str | None) -> datetime | None:
+    return datetime.fromisoformat(raw) if raw else None
 
 
 def _item_node(item: Item) -> dict:
@@ -25,8 +30,13 @@ def _item_node(item: Item) -> dict:
         "url": item.url,
         "source": item.source,
         "origin": item.origin,
+        # Renderers show each link's age (terminal.py/discord.py _origin_line) —
+        # dropping this on replay would silently render stale-looking output
+        # for a tool whose whole job is faithful formatting iteration.
+        "published": item.published.isoformat() if item.published else None,
         "related": [
-            {"title": r.title, "url": r.url, "source": r.source, "origin": r.origin}
+            {"title": r.title, "url": r.url, "source": r.source, "origin": r.origin,
+             "published": r.published.isoformat() if r.published else None}
             for r in item.related
         ],
     }
@@ -71,7 +81,7 @@ def _item_from_node(node: dict) -> Item:
         source=node.get("source", ""),
         origin=node.get("origin") or node.get("source", ""),
         kind="article",       # rendering never branches on kind; see synth/render
-        published=None,
+        published=_parse_published(node.get("published")),
         related=tuple(_item_from_node(r) for r in node.get("related", [])),
     )
 

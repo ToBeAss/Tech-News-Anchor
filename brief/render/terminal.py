@@ -44,6 +44,10 @@ def _clip(text: str, limit: int) -> str:
     return cut.rstrip(",;:.—- ") + "…"
 
 
+def _origin_line(item) -> str:
+    return " · ".join(p for p in (item.origin, item.age()) if p)
+
+
 def _entry(entry: Entry, *, terse: bool = False, flags: list[str] | None = None) -> str:
     """terse = tier two: one clipped line, so the hierarchy stays visible."""
     lines = [f" {BOLD(entry.headline)}"]
@@ -56,11 +60,16 @@ def _entry(entry: Entry, *, terse: bool = False, flags: list[str] | None = None)
         body = " ".join(p for p in (entry.fact, entry.comment) if p)
         if body:
             lines.append(_wrap(body))
-    lines.append(DIM(f"   {entry.item.origin} · ") + CYAN(entry.item.url))
+    lines.append(DIM(f"   {_origin_line(entry.item)} · ") + CYAN(entry.item.url))
     # Merged duplicates keep their links: the other outlet's angle is often
-    # worth reading even though it doesn't deserve its own slot.
+    # worth reading even though it doesn't deserve its own slot. Each carries
+    # its own publish time — a merged cluster can span reports written hours
+    # apart as an incident's understanding evolved (initial "an attack",
+    # official "not malicious" hours later, "resolved" after that), and
+    # without the timestamp a reader clicking the earliest link has no way to
+    # know it's superseded rather than contradicting.
     for related in entry.item.related:
-        lines.append(DIM(f"   also {related.origin} · ") + CYAN(related.url))
+        lines.append(DIM(f"   also {_origin_line(related)} · ") + CYAN(related.url))
     if flags:
         # Marked inline, next to the claim, not only in a footer — an unverified
         # figure must be visible at the moment it is read.

@@ -80,6 +80,13 @@ Do not chain: if A and B are the same story and B mentions C, that does not \
 put C in the group. Two datacentre contracts in different countries are two \
 stories even when one article discusses both.
 
+An actor advancing its own project and an authority acting on that class of \
+project are two events, even in the same place and the same week. "Company X \
+progresses its datacentre" and "the state pauses datacentre approvals" are \
+separate stories however closely related — do not merge a vendor's own news \
+with a regulator's, a union's, or a court's response to the general situation \
+that vendor operates in.
+
 For each group, first write "event": one short sentence naming the specific \
 thing that happened, with its actor and its place. If you cannot write one \
 sentence that is true of every item in the group, it is not a group.

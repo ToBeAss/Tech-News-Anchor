@@ -156,18 +156,29 @@ sources:
     per_feed: 6
     url: "https://simonwillison.net/atom/everything/"
 
-  # Capped at 4: high publishing rate, otherwise dominates on volume alone.
+  # Date-sorted, not preserve_order, so per_feed acts as a RECENCY cap here —
+  # the newest N survive regardless of importance. Measured live: 12 against
+  # this feed's actual rate covered only ~10 hours, not the 18-24h originally
+  # assumed here — a production run at a fixed time of day would structurally
+  # exclude the entire previous working day's coverage, every single run, not
+  # just on a busy afternoon. Raised to a level that should cover a full day
+  # at the observed rate; still a rough estimate, not a guarantee. The cost is
+  # real (see kode24/digi.no above) — it lands in dedupe and especially
+  # synthesis, not just gate, so it is not free the way a gate-only source's
+  # cap increase would be.
   - name: "The Register"
     kind: "article"
-    per_feed: 6
+    per_feed: 30
     url: "https://www.theregister.com/headlines.atom"
 
   # NOTE: the old /arstechnica/technology-lab path is a dead legacy section —
   # that is why it silently returned zero. This is the live index feed.
   # Narrower alternatives: arstechnica.com/ai/feed, .../information-technology/feed
+  #
+  # Same recency-cap reasoning as The Register above; lower rate, lower cap.
   - name: "Ars Technica"
     kind: "article"
-    per_feed: 6
+    per_feed: 20
     url: "https://feeds.arstechnica.com/arstechnica/index"
 
   # --- Research --------------------------------------------------------------
@@ -193,14 +204,20 @@ sources:
   # for 'rss' or 'atom' to find the real path.
   # [Ekstra] marks paywalled articles — excluded, since a link a colleague
   # can't open is worse than no link. Drop the exclude to see them anyway.
+  #
+  # per_feed raised from 6: these are the sources `priorities` ranks ABOVE
+  # their international equivalents, so they should be the last caps to bind —
+  # they were instead the tightest, which silently worked against the
+  # priorities block on any day either published more than usual.
   - name: "digi.no"
     kind: "article"
-    per_feed: 6
+    per_feed: 15
     url: "https://www.digi.no/rss"
     exclude:
       - "[ekstra]"
 
+  # per_feed raised from 5, same reasoning as digi.no above.
   - name: "kode24"
     kind: "article"
-    per_feed: 5
+    per_feed: 15
     url: "https://www.kode24.no/?lab_viewport=rss"

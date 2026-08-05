@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from ..sources import Item
 from ..synth import Brief, Entry
 from .budget import ALSO_MAX_CHARS
 
@@ -49,6 +50,10 @@ def _date_title(now: datetime | None = None) -> str:
     return f"{now:%A} {now.day} {now:%B %Y}"
 
 
+def _origin_line(item: Item) -> str:
+    return " · ".join(p for p in (item.origin, item.age()) if p)
+
+
 def _top_block(entry: Entry, flagged: dict[str, list[str]]) -> str:
     lines = [f"**{_md_link(entry.headline, entry.item.url)}**"]
     # Fact and comment are separate fields so the model must produce both, but
@@ -56,8 +61,13 @@ def _top_block(entry: Entry, flagged: dict[str, list[str]]) -> str:
     body = " ".join(p for p in (entry.fact, entry.comment) if p)
     if body:
         lines.append(body)
-    lines.append(f"*{entry.item.origin}*")
-    lines += [f"also: {_md_link(r.origin, r.url)}" for r in entry.item.related]
+    lines.append(f"*{_origin_line(entry.item)}*")
+    # Each merged sibling carries its own publish time: a cluster can span
+    # reports written hours apart as an incident's understanding evolved
+    # (initial "an attack", official "not malicious" hours later, "resolved"
+    # after that), and without it a reader clicking the earliest link has no
+    # way to know it's superseded rather than contradicting.
+    lines += [f"also: {_md_link(_origin_line(r), r.url)}" for r in entry.item.related]
     bad = flagged.get(entry.item.id)
     if bad:
         # Inline, next to the claim it belongs to — not collected in a footer
@@ -77,7 +87,7 @@ def _horizon_line(entry: Entry, flagged: dict[str, list[str]]) -> str:
     # landed in the terse section. Matches terminal.py's _entry(), which shows
     # these unconditionally rather than only in the full (top-signal) form.
     for related in entry.item.related:
-        text += f"\nalso: {_md_link(related.origin, related.url)}"
+        text += f"\nalso: {_md_link(_origin_line(related), related.url)}"
     return text
 
 

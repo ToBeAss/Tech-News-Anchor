@@ -56,6 +56,15 @@ class Item:
     origin: str                  # display label, e.g. "mistral.ai via Hacker News"
     kind: str                    # "article" | "video" | "paper"
     published: datetime | None
+    # A digit-free community-engagement label ("heavily upvoted"), currently
+    # populated only for Hacker News from hnrss's point count. Deliberately a
+    # word, not the number: verify checks every figure a written fact contains
+    # against the item's own title+summary, and a real point count sitting in
+    # for_prompt() but absent from that check would fail an honest quote the
+    # same way it would flag a fabrication — indistinguishable to the checker,
+    # even though it's neither. A word bucket can't be quoted as a figure, so
+    # it never needs checking and can't be mistaken for a claim about the story.
+    prominence: str = ""
     # Duplicates merged into this one by dedupe. Whole Items, not a projection:
     # verify needs their text to check a figure, and promoting one to lead needs
     # its summary so the recorded snapshot still matches the link.
@@ -77,14 +86,19 @@ class Item:
         came from a vendor domain is signal for calling it a vendor announcement.
         Age matters once the window is wider than a day: without it the model
         cannot tell a two-hour-old story from a four-day-old one, nor hedge with
-        'from Monday' when surfacing something it missed earlier.
+        'from Monday' when surfacing something it missed earlier. `prominence`
+        exists because `preserve_order` alone only encodes a source's own ranking
+        as list POSITION, which is invisible once items from several sources are
+        interleaved in one flat catalogue — this states it in words instead.
 
         Merged duplicates contribute their TITLE only. verify.py checks written
         figures against exactly this text, so widening it to sibling summaries
-        would let a figure the model never saw pass as supported.
+        would let a figure the model never saw pass as supported. `prominence`
+        is never in that text either, for the same reason: it isn't a claim
+        about the story, so it must never be checkable as one.
         """
-        age = self.age()
-        head = f"[{self.id}] ({self.origin}, {self.kind}{', ' + age if age else ''}) {self.title}"
+        tags = ", ".join(t for t in (self.kind, self.age(), self.prominence) if t)
+        head = f"[{self.id}] ({self.origin}, {tags}) {self.title}"
         body = f"{head}\n{self.summary}" if self.summary else head
         if self.related:
             covers = "; ".join(f"{r.origin}: {r.title}" for r in self.related)
@@ -139,16 +153,43 @@ SUMMARY_CHARS = 2000
 # figure in it, verify to accept a written number because it merely matched a
 # Points/Comments count — none of which was ever real. Stripped to empty is the
 # honest state; for_prompt() already omits the body line when summary is "".
+#
+# The point count is the one real thing in this blob (see Item.prominence for
+# why it's recovered as a word, not the digit itself), so the pattern captures
+# it rather than just matching — one regex, so extraction and stripping can
+# never disagree about what counts as this boilerplate.
 _HN_METADATA_RE = re.compile(
-    r"^Article URL:\s*\S+\s+Comments URL:\s*\S+\s+Points:\s*\d+\s+#\s*Comments:\s*\d+$"
+    r"^Article URL:\s*\S+\s+Comments URL:\s*\S+\s+Points:\s*(\d+)\s+#\s*Comments:\s*\d+$"
 )
+
+# Starting points, not tuned against a real distribution yet — revisit once a
+# week of runs shows what's typical for this feed's point counts.
+_PROMINENCE_BUCKETS = ((250, "heavily upvoted"), (120, "well upvoted"))
+
+
+def _normalize_for_match(raw: str | None) -> str:
+    if not raw:
+        return ""
+    text = html.unescape(_TAG_RE.sub(" ", raw))
+    return _WS_RE.sub(" ", text).strip()
+
+
+def _hn_prominence(raw: str | None) -> str:
+    """A digit-free engagement label from hnrss's point count, or ""."""
+    match = _HN_METADATA_RE.match(_normalize_for_match(raw))
+    if not match:
+        return ""
+    points = int(match.group(1))
+    for threshold, label in _PROMINENCE_BUCKETS:
+        if points >= threshold:
+            return label
+    return ""
 
 
 def _clean(raw: str | None, limit: int = SUMMARY_CHARS) -> str:
     if not raw:
         return ""
-    text = html.unescape(_TAG_RE.sub(" ", raw))
-    text = _WS_RE.sub(" ", text).strip()
+    text = _normalize_for_match(raw)
     if _HN_METADATA_RE.match(text):
         return ""
     return text[: limit - 1] + "…" if len(text) > limit else text
@@ -248,15 +289,17 @@ def fetch_feed(source: dict, *, default_limit: int, cutoff: datetime | None):
             continue
         in_window += 1
         url = _canonical(link)
+        raw_description = (
+            entry.get("summary")
+            or entry.get("description")
+            or entry.get("media_description")          # YouTube media:description
+            or (entry.get("content") or [{}])[0].get("value")
+        )
         item = Item(
             id="",
             title=_clean(entry.get("title"), 200) or "(untitled)",
-            summary=_clean(
-                entry.get("summary")
-                or entry.get("description")
-                or entry.get("media_description")          # YouTube media:description
-                or (entry.get("content") or [{}])[0].get("value")
-            ),
+            summary=_clean(raw_description),
+            prominence=_hn_prominence(raw_description),
             url=url,
             source=name,
             origin=f"{_domain(url)} via {name}" if aggregator else name,
@@ -275,6 +318,19 @@ def fetch_feed(source: dict, *, default_limit: int, cutoff: datetime | None):
         warning = (f"{name}: nothing matched in window"
                    + (f" (filtered {in_window} by keywords)"
                       if (keywords or excludes) and in_window else ""))
+    elif len(rows) > limit and not source.get("preserve_order") and not keywords:
+        # preserve_order sources take the top N of an already-ranked feed by
+        # design — that's correct, not a cap binding. A date-sorted source
+        # dropping items past the limit is a RECENCY cap: a busy hour can push
+        # the window's actual biggest story out before gate, dedupe, or
+        # synthesis ever see it, and nothing else would surface that silently.
+        #
+        # Sources with a `match` filter are excluded: arXiv cs.AI is DESIGNED
+        # to cap hard after filtering a firehose, so this would fire every run
+        # restating a known, accepted tradeoff rather than reporting anything
+        # new — exactly the warning-fatigue this project already avoided once
+        # with the off-lead figure check before verify.promote_leads existed.
+        warning = f"{name}: capped at {limit}, {len(rows) - limit} more in window were dropped"
 
     # HN is point-ranked and lobste.rs is hotness-ranked: the order the feed
     # arrives in IS the quality signal. Re-sorting by date throws that away and
