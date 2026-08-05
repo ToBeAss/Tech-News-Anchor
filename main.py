@@ -134,6 +134,7 @@ def _run_pipeline(args, config):
     # Promote before verifying and before recording: promotion changes which URL
     # ships, and both the flags and the stored snapshot must describe that URL.
     brief = verify.promote_leads(brief)
+    warnings.extend(synth.budget_warnings(brief))
     flagged, fact_warnings = verify.check(brief)
     warnings.extend(fact_warnings)
 

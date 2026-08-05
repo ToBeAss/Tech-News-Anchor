@@ -61,12 +61,18 @@ window:
 #
 # When delivery splits into Discord (personal) and Teams (work), this block is
 # the natural thing to fork — same pipeline, two audience descriptions.
+#
+# No organisation is named below, on purpose: a named employer became a hook
+# the model reached for directly ("Kartverket-adjacent teams should watch
+# this") instead of using it as background judgement, which the prompt
+# explicitly forbids. Keep it this way — describe the reasoning the reader
+# needs, not the org that needs it.
 audience: |
-  A small innovation team inside Kartverket, the Norwegian Mapping Authority —
-  a state agency responsible for national geodata, the cadastre, the land
-  register, sea charts and geodesy. The team explores emerging technology and
-  advises on what the organisation should pay attention to, so its interest is
-  practical and forward-looking rather than academic.
+  A small innovation team inside a national public-sector agency responsible
+  for large-scale geospatial infrastructure — mapping, the cadastre, the land
+  register, sea charts and geodesy. The team explores emerging technology to
+  build a working understanding of it — hands-on, not a survey — so its
+  interest is practical and forward-looking rather than academic.
 
   What this means for relevance:
   - Public-sector constraints are real: procurement rules, data protection,
@@ -89,6 +95,9 @@ interests: |
   architectures. Backend and systems engineering (Python, cloud-native,
   containers, GCP). Developer tooling and infrastructure. Geospatial tech and
   public-sector digitalisation. AI regulation and governance in the EU.
+  Leadership and institutional changes at frontier AI labs, when they signal a
+  shift in research direction or capability rather than ordinary executive
+  churn.
   Not interested in: consumer gadget launches, crypto price moves, funding
   rounds without a technical angle.
 

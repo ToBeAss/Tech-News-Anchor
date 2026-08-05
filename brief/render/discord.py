@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from ..synth import Brief, Entry
+from .budget import ALSO_MAX_CHARS
 
 ACCENT = 0xD92B2B       # brand red
 DEGRADED = 0xE8A33D     # amber — a source was lost this run
@@ -25,11 +26,6 @@ MAX_DESCRIPTION = 4096
 MAX_TITLE = 256
 MAX_FOOTER = 2048
 MAX_EMBEDS_PER_MESSAGE = 10
-
-# Independent of the terminal renderer's ALSO_MAX_CHARS: Discord renders in a
-# proportional font in a wider column on both desktop and mobile, so the two
-# media earn separate budgets rather than sharing one tuned for an 80-col term.
-HORIZON_ENTRY_CHARS = 200
 
 
 def _degraded(warnings: list[str]) -> list[str]:
@@ -72,7 +68,7 @@ def _top_block(entry: Entry, flagged: dict[str, list[str]]) -> str:
 
 def _horizon_line(entry: Entry, flagged: dict[str, list[str]]) -> str:
     head = f"**{_md_link(entry.headline, entry.item.url)}**"
-    text = f"{head} — {_clip(entry.comment, HORIZON_ENTRY_CHARS)}" if entry.comment else head
+    text = f"{head} — {_clip(entry.comment, ALSO_MAX_CHARS)}" if entry.comment else head
     bad = flagged.get(entry.item.id)
     if bad:
         text += f" ⚠️ {', '.join(bad)}"

@@ -40,6 +40,16 @@ CAT_MIN_GROUPS = 2
 CAT_MAX_GROUPS = 4
 CAT_TOTAL_MAX = 9
 
+# Backstop, not budget: set above the prompt's own limits (fact 20-30, tier-one
+# comment 40-55, tier-two comment 25) so a well-behaved entry never trips them
+# and only genuine overruns are reported. Same relationship as ALSO_MAX_CHARS in
+# the terminal renderer, which only ever backstopped tier two — tier one had no
+# equivalent, and a ~50% overrun there is invisible in a terminal scroll but
+# expensive inside a 6000-char Discord message.
+TOP_FACT_WORDS = 35
+TOP_COMMENT_WORDS = 65
+ALSO_COMMENT_WORDS = 28
+
 
 @dataclass(frozen=True)
 class Brief:
@@ -106,6 +116,13 @@ organisation or sector.
 not a subject requirement. Never force a connection to their organisation into \
 the commentary, and never pick a weak item because it is superficially \
 on-sector over a strong one that is not.
+- Do NOT phrase relevance as advice to a category of reader — "public-sector \
+teams should watch this", "important for organisations like this", "geospatial \
+teams should note" are all the same tell: the audience block leaking into the \
+prose as a label instead of being absorbed as judgement. State what the item \
+means or implies instead of who should pay attention to it. If a sentence \
+would still make sense with "readers of this brief" swapped in for the \
+specific claim, rewrite it.
 - RECENCY: each item carries its age. The window deliberately reaches back \
 further than a day so nothing is lost to a failed run or a crowded one, but \
 the brief is published daily and should read as today's. Prefer the fresher \
@@ -161,12 +178,16 @@ item's importance.
 
 ## Budget (hard limits — the brief must stay under a 3 minute read)
 - top_signal: EXACTLY 3 entries. Not 2, not 4. fact 20-30 words (one \
-sentence). comment 40-55 words. This tier gets the depth.
+sentence). comment 40-55 words. This tier gets the depth. Word counts are \
+hard limits, not targets — an entry over them is a defect, and the third \
+sentence of a comment is almost always the one that adds nothing.
 - also_worth_knowing: 2-4 CATEGORIES holding 2-3 entries each, 6-9 entries in \
-total — see the categories section below. comment MAX 25 WORDS — count them. \
-One sentence, and it must END, not trail off. This tier is scannable, not \
-readable. If an item needs more than one line to justify, it belongs in \
-top_signal or nowhere.
+total — see the categories section below. 6 is the preferred count and 9 the \
+ceiling, not the target: a day that honestly yields 6 should return 6. Filling \
+to 9 by including a weak or misread item costs the reader more than the extra \
+entries are worth. comment MAX 25 WORDS — count them. One sentence, and it \
+must END, not trail off. This tier is scannable, not readable. If an item \
+needs more than one line to justify, it belongs in top_signal or nowhere.
 - video: REQUIRED whenever any candidate is marked (video). Pick the single \
 best one and put it here. comment max 35 words. This slot is reserved — it \
 does not compete with the other two sections, and a video appearing here does \
@@ -304,9 +325,16 @@ def _categories(data: dict, index: dict[str, Item], claimed: set[str]):
 
 def _pick_video(data: dict, index: dict[str, Item], placed: set[str]) -> Entry | None:
     """The reserved video slot. If the model ignored it despite a video candidate
-    existing, surface the newest one as a bare pointer rather than dropping it."""
+    existing, surface the newest one as a bare pointer rather than dropping it.
+
+    The model's pick is kind-checked. Told the slot is reserved and required, it
+    will fill it on a day with no video candidates by reaching for something that
+    merely *mentions* video — a blog post about generating a clip locally is not
+    a video. Same philosophy as the unknown-id drop: make the error structurally
+    impossible instead of asking the prompt to be careful.
+    """
     video = _entry(data.get("video"), index)
-    if video and video.item.id not in placed:
+    if video and video.item.kind == "video" and video.item.id not in placed:
         return video
 
     spare = [i for i in index.values() if i.kind == "video" and i.id not in placed]
@@ -360,3 +388,25 @@ def _validate(data: dict, index: dict[str, Item]) -> Brief:
 
     return Brief(top=top, also=also, video=video, meta=meta,
                  shortfall=", ".join(shortfall) or None, groups=tuple(groups))
+
+
+def budget_warnings(brief: Brief) -> list[str]:
+    """Entries that overshot the prompt's length budget.
+
+    Reported rather than truncated: a clipped tier-one comment loses the take,
+    and the fix is the prompt, not the renderer. Returned as warnings so the
+    caller can fold them in with verify's — Brief's shape stays unchanged.
+    """
+    over: list[str] = []
+    for entry in brief.top:
+        fact_words = len(entry.fact.split())
+        comment_words = len(entry.comment.split())
+        if fact_words > TOP_FACT_WORDS:
+            over.append(f"{entry.item.id} fact {fact_words}w > {TOP_FACT_WORDS}")
+        if comment_words > TOP_COMMENT_WORDS:
+            over.append(f"{entry.item.id} comment {comment_words}w > {TOP_COMMENT_WORDS}")
+    for entry in brief.also:
+        comment_words = len(entry.comment.split())
+        if comment_words > ALSO_COMMENT_WORDS:
+            over.append(f"{entry.item.id} comment {comment_words}w > {ALSO_COMMENT_WORDS}")
+    return [f"OVER BUDGET: {', '.join(over)}"] if over else []

@@ -130,12 +130,27 @@ def _fetch(url: str) -> tuple[bytes | None, str | None]:
 # the rest need the article fetched. Cheap either way — few items are long.
 SUMMARY_CHARS = 2000
 
+# hnrss.org's <description> is HN's OWN discussion metadata — the article link
+# again, the comments link, the score — never an excerpt of the linked article,
+# which HN doesn't host and hnrss can't fetch. Every single Hacker News item
+# carries this, verbatim, unbounded by how much real content exists (none).
+# Passing it through as "summary" let every HN item pretend to carry content it
+# never had: dedupe was trusted to find a bridging fact in it, synth to ground a
+# figure in it, verify to accept a written number because it merely matched a
+# Points/Comments count — none of which was ever real. Stripped to empty is the
+# honest state; for_prompt() already omits the body line when summary is "".
+_HN_METADATA_RE = re.compile(
+    r"^Article URL:\s*\S+\s+Comments URL:\s*\S+\s+Points:\s*\d+\s+#\s*Comments:\s*\d+$"
+)
+
 
 def _clean(raw: str | None, limit: int = SUMMARY_CHARS) -> str:
     if not raw:
         return ""
     text = html.unescape(_TAG_RE.sub(" ", raw))
     text = _WS_RE.sub(" ", text).strip()
+    if _HN_METADATA_RE.match(text):
+        return ""
     return text[: limit - 1] + "…" if len(text) > limit else text
 
 

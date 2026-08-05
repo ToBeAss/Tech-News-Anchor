@@ -9,6 +9,7 @@ import textwrap
 from datetime import datetime
 
 from ..synth import Brief, Entry
+from .budget import ALSO_MAX_CHARS
 
 _COLOR = sys.stdout.isatty() and os.getenv("NO_COLOR") is None
 
@@ -34,12 +35,6 @@ def _wrap(text: str, indent: str = "   ") -> str:
 
 def _rule(label: str) -> str:
     return "\n" + BOLD(label) + "\n" + DIM("─" * _width())
-
-
-# ~25 words. The renderer clip is a backstop, not the budget: it sits slightly
-# above the prompt limit so a well-behaved entry is never cut mid-thought, and
-# only genuine overruns get truncated.
-ALSO_MAX_CHARS = 190
 
 
 def _clip(text: str, limit: int) -> str:
