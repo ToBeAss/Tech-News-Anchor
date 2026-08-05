@@ -4,22 +4,32 @@
 #   https://www.youtube.com/feeds/videos.xml?channel_id=<CHANNEL_ID>
 # TLDR has no official feed; it arrives by email. Deferred to iteration 2
 # (Gmail API pull), since the community RSS mirrors are unreliable.
+#
+# Per-source keys:
+#   kind:       article | video | paper  (labelling only)
+#   aggregator: true  -> display as "domain via Feed Name" (HN, lobste.rs)
+#   per_feed:       override the global cap for this source
+#   preserve_order: keep feed order (ranked feeds); skip the date re-sort
+#   match:      keyword allowlist applied BEFORE the cap; for firehose feeds
+#   gate:       free-text relevance rule, judged by a small LLM call at ingestion.
+#               For sources where the topic is not reliably in the title.
+#   exclude:    keyword blocklist, applied first; e.g. paywall markers
 
 llm:
-  model: "gpt-5.4-mini"
+  model: "gpt-5.4"
   temperature: 0.7
   max_output_tokens: 2000
 
-window:
-  # Only consider items published within this many hours. A daily run wants ~26
-  # (24 + slack); a manual catch-up run wants more. Override with --hours.
-  hours: 36
-  # Per-feed cap before synthesis, newest first. Keeps the prompt bounded.
-  per_feed: 8
+# Items already briefed are remembered in state/seen.json and excluded from
+# later runs, so a wide window does not resurface the same stories daily.
+# `--no-memory` ignores it for a run; `--forget` clears it.
+memory:
+  retention_days: 30
 
-# Free-text description of what you care about. This is the ranking filter —
-# the single highest-leverage thing to tune. Be specific; generic interests
-# produce generic commentary.
+window:
+  hours: 36
+  per_feed: 12
+
 interests: |
   Agentic AI systems, LLM tooling and orchestration, memory/context
   architectures. Backend and systems engineering (Python, cloud-native,
@@ -28,23 +38,106 @@ interests: |
   Not interested in: consumer gadget launches, crypto price moves, funding
   rounds without a technical angle.
 
+# Ranking weight applied on top of `interests`. Kept separate because it is a
+# weighting rule, not a topic — burying it in the interests paragraph got it
+# treated as a footnote and Norwegian stories were consistently dropped.
+priorities: |
+  Norwegian and Nordic tech, public-sector digitalisation, and local
+  infrastructure stories rank ABOVE their international equivalents. If a
+  global story has a Norwegian instance in the candidates, lead with the
+  Norwegian one. Norwegian-language sources are first-class, not filler.
+  Datacentre siting, national digital infrastructure, public-sector security
+  incidents, and Norwegian regulatory moves are high priority even when the
+  item is short or the summary is untranslated.
+
 sources:
   - name: "Fireship"
     kind: "video"
     url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA"
 
+  # Mostly off-topic, occasionally excellent on self-hosting, local LLMs and
+  # Linux. Titles rarely reveal which — hence the gate rather than `match`.
+  - name: "PewDiePie"
+    kind: "video"
+    per_feed: 5
+    url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC-lHJZR3Gqxm24_Vd_AJ5Yw"
+    gate: |
+      KEEP videos about programming, software development, self-hosting, home
+      servers, Linux, running local AI models, hardware builds, or hands-on
+      experiments with technology — including when framed as a personal
+      challenge or hobby project rather than a tutorial.
+      DROP gaming and let's-plays, reactions, vlogs, family and lifestyle
+      content, commentary on internet drama, and anything where technology is
+      only incidental background.
+
+  # --- Discovery layer -------------------------------------------------------
+  # Threshold lowered to 100: filtering is cheap, so over-ingest and let the
+  # model cut. Aggregators display the origin domain, not their own name.
   - name: "Hacker News"
     kind: "article"
-    url: "https://hnrss.org/frontpage?points=200"
+    aggregator: true
+    preserve_order: true   # hnrss returns point-ranked; do not re-sort by date
+    per_feed: 12
+    url: "https://hnrss.org/frontpage?points=100"
 
-  - name: "Ars Technica"
+  - name: "lobste.rs"
     kind: "article"
-    url: "https://feeds.arstechnica.com/arstechnica/technology-lab"
+    aggregator: true
+    preserve_order: true   # lobste.rs returns hotness-ranked
+    per_feed: 8
+    url: "https://lobste.rs/rss"
 
-  - name: "The Register"
-    kind: "article"
-    url: "https://www.theregister.com/headlines.atom"
-
+  # --- Practitioners and press ----------------------------------------------
   - name: "Simon Willison"
     kind: "article"
+    per_feed: 6
     url: "https://simonwillison.net/atom/everything/"
+
+  # Capped at 4: high publishing rate, otherwise dominates on volume alone.
+  - name: "The Register"
+    kind: "article"
+    per_feed: 6
+    url: "https://www.theregister.com/headlines.atom"
+
+  # NOTE: the old /arstechnica/technology-lab path is a dead legacy section —
+  # that is why it silently returned zero. This is the live index feed.
+  # Narrower alternatives: arstechnica.com/ai/feed, .../information-technology/feed
+  - name: "Ars Technica"
+    kind: "article"
+    per_feed: 6
+    url: "https://feeds.arstechnica.com/arstechnica/index"
+
+  # --- Research --------------------------------------------------------------
+  # cs.AI announces ~150 papers/day in submission order, so "newest 3" is close
+  # to random sampling. The keyword gate runs before the cap and is what makes
+  # this source usable — tune these terms, they are the whole filter.
+  - name: "arXiv cs.AI"
+    kind: "paper"
+    per_feed: 3
+    url: "https://rss.arxiv.org/rss/cs.AI"
+    match:
+      - "agent"
+      - "tool use"
+      - "retrieval"
+      - "memory"
+      - "orchestrat"
+      - "context window"
+      - "evaluation"
+
+  # --- Norwegian / public sector --------------------------------------------
+  # UNVERIFIED URLs — I could not reach these to confirm. Run --dry and check
+  # for a "returned 0 entries" warning; if so, view-source the site and search
+  # for 'rss' or 'atom' to find the real path.
+  # [Ekstra] marks paywalled articles — excluded, since a link a colleague
+  # can't open is worse than no link. Drop the exclude to see them anyway.
+  - name: "digi.no"
+    kind: "article"
+    per_feed: 6
+    url: "https://www.digi.no/rss"
+    exclude:
+      - "[ekstra]"
+
+  - name: "kode24"
+    kind: "article"
+    per_feed: 5
+    url: "https://www.kode24.no/?lab_viewport=rss"

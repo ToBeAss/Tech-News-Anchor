@@ -41,20 +41,52 @@ def _rule(label: str) -> str:
     return "\n" + BOLD(label) + "\n" + DIM("─" * _width())
 
 
+ALSO_MAX_CHARS = 140  # renderer-enforced; prompts drift under pressure
+
+
+def _clip(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0]
+    return cut.rstrip(",;:.\u2014- ") + "\u2026"
+
+
 def _entry(entry: Entry, *, terse: bool = False) -> str:
+    """terse = tier two: one clipped line, so the hierarchy stays visible."""
     lines = [f" {BOLD(entry.headline)}"]
     if entry.comment:
-        lines.append(_wrap(entry.comment))
-    lines.append(DIM(f"   {entry.item.source} · ") + CYAN(entry.item.url))
+        comment = _clip(entry.comment, ALSO_MAX_CHARS) if terse else entry.comment
+        lines.append(_wrap(comment))
+    lines.append(DIM(f"   {entry.item.origin} \u00b7 ") + CYAN(entry.item.url))
+    # Merged duplicates keep their links: the other outlet's angle is often
+    # worth reading even though it doesn't deserve its own slot.
+    for origin, _title, url in entry.item.related:
+        lines.append(DIM(f"   also {origin} \u00b7 ") + CYAN(url))
     return "\n".join(lines) + ("" if terse else "\n")
 
 
+def _degraded(warnings: list[str]) -> list[str]:
+    """Sources that were lost this run, as opposed to merely quiet."""
+    return [w for w in warnings if "UNREACHABLE" in w]
+
+
 def to_terminal(brief: Brief, *, considered: int, warnings: list[str]) -> str:
+    lost = _degraded(warnings)
     out = [
         "",
         BOLD(f"  TECH BRIEF  ") + DIM(datetime.now().strftime("%A %d %B %Y, %H:%M")),
         DIM("═" * _width()),
     ]
+
+    # A lost source means the brief was built from a smaller pool than intended.
+    # That belongs at the top, where it can be read before the content, not in a
+    # footer the reader reaches after already trusting the ranking.
+    if lost:
+        out.append(YELLOW(f"  ⚠ DEGRADED — {len(lost)} source(s) unreachable; "
+                          "ranking drew on a reduced pool"))
+        for warning in lost:
+            out.append(YELLOW(f"      {warning}"))
+        out.append("")
 
     if brief.top:
         out.append(_rule("🔥 TOP SIGNAL"))
@@ -77,8 +109,11 @@ def to_terminal(brief: Brief, *, considered: int, warnings: list[str]) -> str:
     out.append(DIM("─" * _width()))
     out.append(DIM(f"  {considered} items considered · "
                    f"{len(brief.top) + len(brief.also) + (1 if brief.video else 0)} kept"))
+    if brief.shortfall:
+        out.append(YELLOW(f"  ⚠ under target: {brief.shortfall}"))
     for warning in warnings:
-        out.append(YELLOW(f"  ⚠ {warning}"))
+        if warning not in lost:
+            out.append(YELLOW(f"  ⚠ {warning}"))
     out.append("")
     return "\n".join(out)
 

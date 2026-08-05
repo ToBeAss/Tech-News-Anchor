@@ -16,6 +16,9 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+import dedupe
+import gate
+import memory
 import render
 import sources
 import synth
@@ -56,7 +59,20 @@ def main() -> int:
     parser.add_argument("--per-feed", type=int, help="override per-feed item cap")
     parser.add_argument("--model", help="override the model")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of prose")
+    parser.add_argument("--no-dedupe", action="store_true",
+                        help="skip the duplicate-clustering pre-pass")
+    parser.add_argument("--no-gate", action="store_true",
+                        help="skip per-source LLM relevance gating")
+    parser.add_argument("--no-memory", action="store_true",
+                        help="ignore and do not update the briefed-items history")
+    parser.add_argument("--forget", action="store_true",
+                        help="clear the briefed-items history and exit")
     args = parser.parse_args()
+
+    if args.forget:
+        memory.save({})
+        print("Cleared briefed-items history.")
+        return 0
 
     config = load_config(Path(args.config))
     window = config.get("window", {})
@@ -68,9 +84,31 @@ def main() -> int:
         per_feed=args.per_feed or window.get("per_feed", 8),
     )
 
+    # Relevance gate runs before --dry so the listing reflects what synthesis
+    # will actually see. --no-gate skips it (and its cost) for pure ingestion checks.
+    if not args.no_gate:
+        items, gate_warnings = gate.apply(
+            items, sources.gate_rules(config["sources"]),
+            model=args.model or llm_cfg.get("model"),
+        )
+        warnings.extend(gate_warnings)
+
+    # Memory filter: drop what previous runs already briefed. Runs before --dry
+    # so the listing reflects the real candidate pool.
+    seen = {} if args.no_memory else memory.load()
+    if seen:
+        items, already = memory.filter_unseen(items, seen)
+        if already:
+            warnings.append(f"memory: skipped {already} item(s) briefed previously")
+
     if args.dry:
         print(render.raw_listing(items, warnings))
         return 0
+
+    if not args.no_dedupe:
+        items, note = dedupe.merge(items, model=args.model or llm_cfg.get("model"))
+        if note:
+            warnings.append(note)
 
     if not items:
         print("Nothing in the window. Try --hours 72.", file=sys.stderr)
@@ -82,6 +120,7 @@ def main() -> int:
         brief = synth.build(
             items,
             config["interests"],
+            config.get("priorities", ""),
             model=args.model or llm_cfg.get("model"),
             temperature=llm_cfg.get("temperature"),
             max_output_tokens=llm_cfg.get("max_output_tokens"),
@@ -89,6 +128,9 @@ def main() -> int:
     except (synth.SynthError, Exception) as exc:
         print(f"Synthesis failed: {exc}", file=sys.stderr)
         return 1
+
+    if not args.no_memory:
+        memory.save(memory.prune(memory.record(memory.load(), brief)))
 
     print(as_json(brief) if args.json
           else render.to_terminal(brief, considered=len(items), warnings=warnings))
