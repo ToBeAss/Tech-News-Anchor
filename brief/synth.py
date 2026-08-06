@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from . import llm
 from .sources import EPOCH, Item
+from .warnings import Warning
 
 
 class SynthError(RuntimeError):
@@ -395,7 +396,7 @@ def _validate(data: dict, index: dict[str, Item]) -> Brief:
                  shortfall=", ".join(shortfall) or None, groups=tuple(groups))
 
 
-def budget_warnings(brief: Brief) -> list[str]:
+def budget_warnings(brief: Brief) -> list[Warning]:
     """Entries that overshot the prompt's length budget.
 
     Reported rather than truncated: a clipped tier-one comment loses the take,
@@ -414,4 +415,4 @@ def budget_warnings(brief: Brief) -> list[str]:
         comment_words = len(entry.comment.split())
         if comment_words > ALSO_COMMENT_WORDS:
             over.append(f"{entry.item.id} comment {comment_words}w > {ALSO_COMMENT_WORDS}")
-    return [f"OVER BUDGET: {', '.join(over)}"] if over else []
+    return [Warning(f"OVER BUDGET: {', '.join(over)}")] if over else []

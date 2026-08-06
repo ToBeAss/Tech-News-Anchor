@@ -11,11 +11,10 @@ extend it into headers, footers, or variable names elsewhere.
 
 from __future__ import annotations
 
-from datetime import datetime
-
-from ..sources import Item
 from ..synth import Brief, Entry
-from .budget import ALSO_MAX_CHARS
+from ..warnings import Warning
+from .budget import (ALSO_MAX_CHARS, MAX_RELATED_SHOWN, clip, date_title, degraded,
+                     footer_text, origin_line)
 
 ACCENT = 0xD92B2B       # brand red — top signal
 SECONDARY = 0x4C72B0    # blue — horizon section
@@ -30,29 +29,9 @@ MAX_FOOTER = 2048
 MAX_EMBEDS_PER_MESSAGE = 10
 
 
-def _degraded(warnings: list[str]) -> list[str]:
-    return [w for w in warnings if "UNREACHABLE" in w]
-
-
 def _md_link(text: str, url: str) -> str:
     # An unescaped ']' or '[' in link text breaks Discord's markdown parser.
     return f"[{text.replace(']', ')').replace('[', '(')}]({url})"
-
-
-def _clip(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    cut = text[:limit].rsplit(" ", 1)[0]
-    return cut.rstrip(",;:.—- ") + "…"
-
-
-def _date_title(now: datetime | None = None) -> str:
-    now = now or datetime.now()
-    return f"{now:%A} {now.day} {now:%B %Y}"
-
-
-def _origin_line(item: Item) -> str:
-    return " · ".join(p for p in (item.origin, item.age()) if p)
 
 
 def _top_block(entry: Entry, flagged: dict[str, list[str]]) -> str:
@@ -62,13 +41,20 @@ def _top_block(entry: Entry, flagged: dict[str, list[str]]) -> str:
     body = " ".join(p for p in (entry.fact, entry.comment) if p)
     if body:
         lines.append(body)
-    lines.append(f"*{_origin_line(entry.item)}*")
+    lines.append(f"*{origin_line(entry.item)}*")
     # Each merged sibling carries its own publish time: a cluster can span
     # reports written hours apart as an incident's understanding evolved
     # (initial "an attack", official "not malicious" hours later, "resolved"
     # after that), and without it a reader clicking the earliest link has no
     # way to know it's superseded rather than contradicting.
-    lines += [f"also: {_md_link(_origin_line(r), r.url)}" for r in entry.item.related]
+    #
+    # Capped: a 6-outlet merge produced six link lines under one headline,
+    # drowning it. See budget.MAX_RELATED_SHOWN.
+    shown = entry.item.related[:MAX_RELATED_SHOWN]
+    lines += [f"also: {_md_link(origin_line(r), r.url)}" for r in shown]
+    remaining = len(entry.item.related) - len(shown)
+    if remaining:
+        lines.append(f"+{remaining} more")
     bad = flagged.get(entry.item.id)
     if bad:
         # Inline, next to the claim it belongs to — not collected in a footer
@@ -79,23 +65,22 @@ def _top_block(entry: Entry, flagged: dict[str, list[str]]) -> str:
 
 def _horizon_line(entry: Entry, flagged: dict[str, list[str]]) -> str:
     head = f"**{_md_link(entry.headline, entry.item.url)}**"
-    text = f"{head} — {_clip(entry.comment, ALSO_MAX_CHARS)}" if entry.comment else head
+    text = f"{head} — {clip(entry.comment, ALSO_MAX_CHARS)}" if entry.comment else head
+    # A trailing count, not a link per sibling — tier two is a scan surface,
+    # and "also:" lines here read as floating between entries rather than
+    # attached to the one they belong to.
+    if entry.item.related:
+        text += f" (+{len(entry.item.related)})"
     bad = flagged.get(entry.item.id)
     if bad:
         text += f" ⚠️ {', '.join(bad)}"
-    # A merged story always shows every link, tier two included — the other
-    # outlet's angle doesn't stop being worth reading just because its story
-    # landed in the terse section. Matches terminal.py's _entry(), which shows
-    # these unconditionally rather than only in the full (top-signal) form.
-    for related in entry.item.related:
-        text += f"\nalso: {_md_link(_origin_line(related), related.url)}"
     return text
 
 
-def _header_embed(lost: list[str]) -> dict:
+def _header_embed(lost: list[Warning]) -> dict:
     embed = {
         "author": {"name": "Fyrtårn"},
-        "title": _date_title(),
+        "title": date_title(),
         "color": DEGRADED if lost else ACCENT,
     }
     # Degraded state read before the content, not in a footer — same reasoning
@@ -103,7 +88,7 @@ def _header_embed(lost: list[str]) -> dict:
     if lost:
         embed["description"] = (
             f"⚠ {len(lost)} source(s) unreachable — ranking drew on a reduced pool\n"
-            + "\n".join(f"• {w}" for w in lost)
+            + "\n".join(f"• {w.text}" for w in lost)
         )
     return embed
 
@@ -162,15 +147,6 @@ def _meta_embed(brief: Brief) -> dict | None:
     return {"title": "Context", "description": f"*{brief.meta}*", "color": META_COLOR}
 
 
-def _footer_text(considered: int, kept: int, shortfall: str | None,
-                 warnings: list[str], lost: list[str]) -> str:
-    parts = [f"{considered} items considered · {kept} kept"]
-    if shortfall:
-        parts.append(f"under target: {shortfall}")
-    parts += [w for w in warnings if w not in lost]
-    return " · ".join(parts)
-
-
 def _embed_chars(embed: dict) -> int:
     total = len(embed.get("title", "")) + len(embed.get("description", ""))
     total += len((embed.get("author") or {}).get("name", ""))
@@ -199,7 +175,7 @@ def _paginate(embeds: list[dict]) -> list[dict]:
     return [{"embeds": m} for m in messages if m]
 
 
-def to_discord(brief: Brief, *, considered: int, warnings: list[str],
+def to_discord(brief: Brief, *, considered: int, warnings: list[Warning],
                flagged: dict[str, list[str]] | None = None) -> list[dict]:
     """Render a Brief to one or more ready-to-POST webhook payloads.
 
@@ -210,7 +186,7 @@ def to_discord(brief: Brief, *, considered: int, warnings: list[str],
     the footer always lands on the true last embed, wherever it ends up.
     """
     flagged = flagged or {}
-    lost = _degraded(warnings)
+    lost = degraded(warnings)
 
     embeds = [_header_embed(lost), _today_embed(brief, flagged)]
     embeds += _horizon_embeds(brief, flagged)
@@ -222,8 +198,8 @@ def to_discord(brief: Brief, *, considered: int, warnings: list[str],
         embeds.append(meta)
 
     embeds[-1]["footer"] = {
-        "text": _footer_text(considered, len(brief.entries()), brief.shortfall,
-                             warnings, lost)[:MAX_FOOTER]
+        "text": footer_text(considered, len(brief.entries()), brief.shortfall,
+                            warnings)[:MAX_FOOTER]
     }
 
     for embed in embeds:

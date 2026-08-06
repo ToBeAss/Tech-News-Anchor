@@ -8,6 +8,7 @@ package — see brief/deliver.py — so a renderer stays testable without it.
 
 from .discord import to_discord
 from .json_out import as_json, replay
+from .slack import to_slack
 from .terminal import raw_listing, to_terminal
 
-__all__ = ["as_json", "raw_listing", "replay", "to_discord", "to_terminal"]
+__all__ = ["as_json", "raw_listing", "replay", "to_discord", "to_slack", "to_terminal"]

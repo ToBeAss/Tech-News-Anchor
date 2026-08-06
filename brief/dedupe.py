@@ -27,6 +27,7 @@ from dataclasses import replace
 
 from . import llm
 from .sources import Item
+from .warnings import Warning
 
 # How much of each summary the grouping call sees. Titles alone could not link
 # "Volta claims $10B AI lab deal for Norway bit barn" to "Anthropic flytter
@@ -106,7 +107,10 @@ def _listing_line(item: Item) -> str:
     return line
 
 
-def _lead_rank(item: Item) -> int:
+def lead_rank(item: Item) -> int:
+    """Lower is more preferred. Public: verify.py's subject-promotion gate
+    reuses this to break a scoring tie the same way dedupe itself would —
+    rather than a second, silently-divergeable copy of PREFER_LEAD's ranking."""
     try:
         return PREFER_LEAD.index(item.source)
     except ValueError:
@@ -116,7 +120,7 @@ def _lead_rank(item: Item) -> int:
 def _order_group(ids: list[str], index: dict[str, Item]) -> list[str]:
     """Put the preferred outlet first. Stable, so a group with no preferred
     source keeps the model's own ordering."""
-    return sorted(ids, key=lambda i: _lead_rank(index[i]))
+    return sorted(ids, key=lambda i: lead_rank(index[i]))
 
 
 def _valid_groups(data: dict, index: dict[str, Item]) -> list[tuple[str, list[str]]]:
@@ -150,11 +154,29 @@ def _valid_groups(data: dict, index: dict[str, Item]) -> list[tuple[str, list[st
     return groups
 
 
+def _cluster_map(groups: list[tuple[str, list[str]]],
+                 index: dict[str, Item]) -> list[dict]:
+    """Event sentence + member ids/titles per group, for --json's audit trail.
+
+    This is discarded today past building `note`'s named-events string. Over-
+    merge (Texas: a vendor's own datacentre news and a regulator's response to
+    it, folded into one story) isn't diagnosable from a published brief alone
+    — by the time it's visible there, the follower's link is already gone.
+    Keeping the full map lets a week of runs be reviewed for merge quality
+    before deciding on a mechanical constraint, rather than guessing at one
+    from a single caught case.
+    """
+    return [{"event": event, "ids": list(ids), "titles": [index[i].title for i in ids]}
+            for event, ids in groups]
+
+
 def merge(items: list[Item], *, model=None, max_output_tokens: int = 500):
-    """Return (items, note). Items in a group collapse into the first, with the
-    rest attached as `related` so their links survive into the brief."""
+    """Return (items, warnings, clusters). Items in a group collapse into the
+    first, with the rest attached as `related` so their links survive into
+    the brief. `clusters` is the full group map — event sentence plus member
+    ids and titles — regardless of whether a warning ended up naming it."""
     if len(items) < 2:
-        return items, None
+        return items, [], []
 
     listing = "\n".join(_listing_line(i) for i in items)
     try:
@@ -166,10 +188,10 @@ def merge(items: list[Item], *, model=None, max_output_tokens: int = 500):
         )
         groups = _valid_groups(llm.parse_json(raw), {i.id: i for i in items})
     except Exception as exc:
-        return items, f"dedupe skipped: {exc}"
+        return items, [Warning(f"dedupe skipped: {exc}")], []
 
     if not groups:
-        return items, None
+        return items, [], []
 
     index = {i.id: i for i in items}
     followers: dict[str, list[Item]] = {
@@ -185,10 +207,19 @@ def merge(items: list[Item], *, model=None, max_output_tokens: int = 500):
         merged.append(replace(item, related=tuple(extra)) if extra else item)
 
     collapsed = len(items) - len(merged)
-    note = (f"merged {collapsed} duplicate item(s) into "
-            f"{len(groups)} stor{'y' if len(groups) == 1 else 'ies'}")
-    # The named events are the audit trail for this stage: a chained over-merge
-    # is obvious in one line here, whereas a bad merge is otherwise only visible
-    # as a wrong `also` link three sections into the brief.
+    # The count is the only dedupe diagnostic a reader sees today — enough to
+    # know the brief was condensed, without the manifest's per-event detail a
+    # reader has no use for.
+    warnings = [Warning(
+        f"merged {collapsed} duplicate{'' if collapsed == 1 else 's'} into "
+        f"{len(groups)} stor{'y' if len(groups) == 1 else 'ies'}",
+        reader=True,
+    )]
+    # The named events are the operator-only audit trail for this stage: a
+    # chained over-merge is obvious in one line here, whereas a bad merge is
+    # otherwise only visible as a wrong `also` link three sections into the
+    # brief. See also dedupe_clusters in --json for the full per-group detail.
     named = "; ".join(event for event, _ids in groups if event)
-    return merged, (f"{note} — {named}" if named else note)
+    if named:
+        warnings.append(Warning(f"merge manifest: {named}"))
+    return merged, warnings, _cluster_map(groups, index)

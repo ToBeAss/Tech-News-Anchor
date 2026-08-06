@@ -44,10 +44,10 @@ state/seen.json      briefed-items history (gitignored)
 1. **[brief/sources.py](brief/sources.py)** — fetch every feed, filter by window and per-source keywords, canonicalise URLs, dedupe by URL, assign ids.
 2. **[brief/gate.py](brief/gate.py)** — one small LLM call per source that has a `gate:` rule, dropping off-topic items. Runs *before* `--dry` so the dry listing reflects the real candidate pool.
 3. **[brief/memory.py](brief/memory.py)** — drop items already briefed in a previous run. Also before `--dry`.
-4. **[brief/dedupe.py](brief/dedupe.py)** — one LLM call that groups ids covering the same underlying event; followers collapse into the leader's `related` tuple.
+4. **[brief/dedupe.py](brief/dedupe.py)** — one LLM call that groups ids covering the same underlying event; followers collapse into the leader's `related` tuple. The full group map (event sentence + member ids/titles) survives past the merge into `--json`'s `dedupe_clusters`, even for groups that didn't make the brief — over-merge is only diagnosable with the grouping decision in front of you, not from a published brief after the fact.
 5. **[brief/synth.py](brief/synth.py)** — the main call: rank, select 3 + 6-9 grouped + 1 video, write headline/fact/comment.
-6. **[brief/verify.py](brief/verify.py)** — promote the merged sibling that supports the headline, then check every figure against the source text. Runs *before* memory is recorded.
-7. **[brief/render/](brief/render/)** — terminal and JSON output.
+6. **[brief/verify.py](brief/verify.py)** — promote the merged sibling that supports the headline (by figure, then by subject), then check every figure against the source text. Runs *before* memory is recorded.
+7. **[brief/render/](brief/render/)** — terminal, JSON, Discord, and Slack output.
 
 [brief/llm.py](brief/llm.py) is the only network path to the model: raw `requests` against the OpenAI Responses API, no SDK (this is meant to run on a Raspberry Pi). Everything it raises is an `LLMError`, including transport failures, so callers never have to know `requests` exceptions exist.
 
@@ -61,7 +61,7 @@ These are load-bearing; several exist because the obvious alternative failed in 
 
 **`verify._source_text` and `Item.for_prompt` must agree.** Merged siblings contribute their *title only* to both. Widening the check to sibling summaries would let a figure the model was never shown pass as supported, which is the exact failure the module exists to catch.
 
-**A merged sibling that supports the headline is promoted to lead.** The reader clicks the primary link, so a figure that only lives in the other outlet's article is a broken promise. `verify.promote_leads` swaps the whole sibling `Item` into the lead position — not a projection of it — so the snapshot memory records still belongs to the URL that shipped. When no sibling supports the figure, the `OFF-LEAD FIGURE` warning still fires.
+**A merged sibling that supports the headline is promoted to lead — by figure, then by subject.** The reader clicks the primary link, so a figure or a subject that only lives in the other outlet's article is a broken promise. `verify.promote_leads` runs two gates: `_promote_by_figure` swaps in a sibling whose own text backs every figure the headline/fact state; if that doesn't fire, `_promote_by_subject` swaps in whichever sibling's title covers more of the headline's proper nouns than the lead's own text does (a *strict* improvement — a subset test false-positives on any on-topic sibling, e.g. it would demote a correct `PREFER_LEAD` source over an unrelated shared word). The subject gate exists because the figure gate no-ops on any figure-free headline: "Datatilsynet is investigating the Ryde data breach" states no number, so a headline written from a merged sibling's angle sailed through `_promote_by_figure` untouched while still linking the wrong article. Either gate swaps the whole sibling `Item` into the lead position — not a projection of it — so the snapshot memory records still belongs to the URL that shipped. When no sibling can fix it, `OFF-LEAD FIGURE` / `OFF-LEAD SUBJECT` still fire.
 
 **Failure modes are chosen per stage, deliberately:**
 - Ingestion — a dead feed degrades the brief but never aborts the run; `UNREACHABLE` warnings surface at the *top* of the output, not in a footer, because a reduced pool changes how much to trust the ranking.

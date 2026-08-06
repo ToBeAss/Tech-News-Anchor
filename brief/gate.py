@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from . import llm
 from .sources import Item
+from .warnings import Warning
 
 _SYSTEM = """You decide which items from a noisy feed are relevant.
 
@@ -46,7 +47,7 @@ def apply(items: list[Item], gates: dict[str, str], *, model=None):
     if not gates:
         return items, []
 
-    warnings: list[str] = []
+    warnings: list[Warning] = []
     survivors: list[Item] = [i for i in items if i.source not in gates]
 
     for source, rule in gates.items():
@@ -69,7 +70,7 @@ def apply(items: list[Item], gates: dict[str, str], *, model=None):
                 raise ValueError("'keep' is not a list")
             keep = {str(i).strip() for i in keep}
         except Exception as exc:
-            warnings.append(f"{source}: gate failed, keeping all ({exc})")
+            warnings.append(Warning(f"{source}: gate failed, keeping all ({exc})"))
             survivors.extend(candidates)
             continue
 
@@ -77,7 +78,7 @@ def apply(items: list[Item], gates: dict[str, str], *, model=None):
         survivors.extend(passed)
         dropped = len(candidates) - len(passed)
         if dropped:
-            warnings.append(f"{source}: gate dropped {dropped}/{len(candidates)} as off-topic")
+            warnings.append(Warning(f"{source}: gate dropped {dropped}/{len(candidates)} as off-topic"))
 
     # Restore ingestion order: gated sources were pulled out and appended, and
     # ids are never reassigned, so without this the listing jumps around.

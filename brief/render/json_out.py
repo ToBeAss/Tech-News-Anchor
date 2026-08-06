@@ -17,6 +17,7 @@ from datetime import datetime
 
 from ..sources import Item
 from ..synth import Brief, Entry
+from ..warnings import Warning
 
 
 def _parse_published(raw: str | None) -> datetime | None:
@@ -52,8 +53,13 @@ def _entry_node(entry: Entry, flagged: dict[str, list[str]]) -> dict:
     return node
 
 
-def as_json(brief: Brief, *, considered: int, warnings: list[str],
-            flagged: dict[str, list[str]] | None = None) -> str:
+def _warning_node(warning: Warning) -> dict:
+    return {"text": warning.text, "reader": warning.reader, "degraded": warning.degraded}
+
+
+def as_json(brief: Brief, *, considered: int, warnings: list[Warning],
+            flagged: dict[str, list[str]] | None = None,
+            clusters: list[dict] | None = None) -> str:
     flagged = flagged or {}
     also_worth_knowing = (
         [{"category": name, "entries": [_entry_node(e, flagged) for e in entries]}
@@ -63,7 +69,13 @@ def as_json(brief: Brief, *, considered: int, warnings: list[str],
     )
     return json.dumps({
         "considered": considered,
-        "warnings": warnings,
+        "warnings": [_warning_node(w) for w in warnings],
+        # The dedupe cluster map, kept even for groups that never made the
+        # brief — over-merge is only diagnosable with the full grouping
+        # decision in front of you, not just whatever survived selection.
+        # See dedupe._cluster_map. Not round-tripped by replay(): it's audit
+        # data for a live run, not something any renderer displays.
+        "dedupe_clusters": clusters or [],
         "top_signal": [_entry_node(e, flagged) for e in brief.top],
         "also_worth_knowing": also_worth_knowing,
         "video": _entry_node(brief.video, flagged) if brief.video else None,
@@ -94,6 +106,11 @@ def _entry_from_node(node: dict, flagged: dict[str, list[str]]) -> Entry:
     return entry
 
 
+def _warning_from_node(node: dict) -> Warning:
+    return Warning(text=node["text"], reader=bool(node.get("reader")),
+                   degraded=bool(node.get("degraded")))
+
+
 def replay(text: str):
     """Reconstruct (brief, considered, warnings, flagged) from as_json() output.
 
@@ -122,4 +139,5 @@ def replay(text: str):
 
     brief = Brief(top=top, also=also, video=video, meta=data.get("meta_note"),
                  shortfall=data.get("shortfall"), groups=groups)
-    return brief, data.get("considered", 0), data.get("warnings") or [], flagged
+    warnings = [_warning_from_node(w) for w in (data.get("warnings") or [])]
+    return brief, data.get("considered", 0), warnings, flagged

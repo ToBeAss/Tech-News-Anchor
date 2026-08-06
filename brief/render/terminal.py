@@ -9,7 +9,8 @@ import textwrap
 from datetime import datetime
 
 from ..synth import Brief, Entry
-from .budget import ALSO_MAX_CHARS
+from ..warnings import Warning
+from .budget import ALSO_MAX_CHARS, MAX_RELATED_SHOWN, clip, degraded, origin_line
 
 _COLOR = sys.stdout.isatty() and os.getenv("NO_COLOR") is None
 
@@ -37,30 +38,19 @@ def _rule(label: str) -> str:
     return "\n" + BOLD(label) + "\n" + DIM("─" * _width())
 
 
-def _clip(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    cut = text[:limit].rsplit(" ", 1)[0]
-    return cut.rstrip(",;:.—- ") + "…"
-
-
-def _origin_line(item) -> str:
-    return " · ".join(p for p in (item.origin, item.age()) if p)
-
-
 def _entry(entry: Entry, *, terse: bool = False, flags: list[str] | None = None) -> str:
     """terse = tier two: one clipped line, so the hierarchy stays visible."""
     lines = [f" {BOLD(entry.headline)}"]
     if terse:
         if entry.comment:
-            lines.append(_wrap(_clip(entry.comment, ALSO_MAX_CHARS)))
+            lines.append(_wrap(clip(entry.comment, ALSO_MAX_CHARS)))
     else:
         # Fact and comment are separate fields so the model must produce both,
         # but they're joined here — a reader wants a paragraph, not a form.
         body = " ".join(p for p in (entry.fact, entry.comment) if p)
         if body:
             lines.append(_wrap(body))
-    lines.append(DIM(f"   {_origin_line(entry.item)} · ") + CYAN(entry.item.url))
+    lines.append(DIM(f"   {origin_line(entry.item)} · ") + CYAN(entry.item.url))
     # Merged duplicates keep their links: the other outlet's angle is often
     # worth reading even though it doesn't deserve its own slot. Each carries
     # its own publish time — a merged cluster can span reports written hours
@@ -68,8 +58,16 @@ def _entry(entry: Entry, *, terse: bool = False, flags: list[str] | None = None)
     # official "not malicious" hours later, "resolved" after that), and
     # without the timestamp a reader clicking the earliest link has no way to
     # know it's superseded rather than contradicting.
-    for related in entry.item.related:
-        lines.append(DIM(f"   also {_origin_line(related)} · ") + CYAN(related.url))
+    #
+    # Tier one only: a cluster of 6+ outlets produced six link lines under one
+    # headline, drowning it. Tier two has no such cap — it's already one
+    # clipped line, so a related link or two costs nothing extra there.
+    shown = entry.item.related if terse else entry.item.related[:MAX_RELATED_SHOWN]
+    for related in shown:
+        lines.append(DIM(f"   also {origin_line(related)} · ") + CYAN(related.url))
+    remaining = len(entry.item.related) - len(shown)
+    if remaining:
+        lines.append(DIM(f"   +{remaining} more"))
     if flags:
         # Marked inline, next to the claim, not only in a footer — an unverified
         # figure must be visible at the moment it is read.
@@ -78,15 +76,10 @@ def _entry(entry: Entry, *, terse: bool = False, flags: list[str] | None = None)
     return "\n".join(lines) + ("" if terse else "\n")
 
 
-def _degraded(warnings: list[str]) -> list[str]:
-    """Sources that were lost this run, as opposed to merely quiet."""
-    return [w for w in warnings if "UNREACHABLE" in w]
-
-
-def to_terminal(brief: Brief, *, considered: int, warnings: list[str],
+def to_terminal(brief: Brief, *, considered: int, warnings: list[Warning],
                 flagged: dict[str, list[str]] | None = None) -> str:
     flagged = flagged or {}
-    lost = _degraded(warnings)
+    lost = degraded(warnings)
     out = [
         "",
         BOLD("  TECH BRIEF  ") + DIM(datetime.now().strftime("%A %d %B %Y, %H:%M")),
@@ -99,7 +92,7 @@ def to_terminal(brief: Brief, *, considered: int, warnings: list[str],
     if lost:
         out.append(YELLOW(f"  ⚠ DEGRADED — {len(lost)} source(s) unreachable; "
                           "ranking drew on a reduced pool"))
-        out += [YELLOW(f"      {warning}") for warning in lost]
+        out += [YELLOW(f"      {warning.text}") for warning in lost]
         out.append("")
 
     if brief.top:
@@ -128,12 +121,12 @@ def to_terminal(brief: Brief, *, considered: int, warnings: list[str],
     out.append(DIM(f"  {considered} items considered · {len(brief.entries())} kept"))
     if brief.shortfall:
         out.append(YELLOW(f"  ⚠ under target: {brief.shortfall}"))
-    out += [YELLOW(f"  ⚠ {w}") for w in warnings if w not in lost]
+    out += [YELLOW(f"  ⚠ {w.text}") for w in warnings if w not in lost]
     out.append("")
     return "\n".join(out)
 
 
-def raw_listing(items, warnings: list[str]) -> str:
+def raw_listing(items, warnings: list[Warning]) -> str:
     """--dry output: what ingestion found, before any synthesis call."""
     out = ["", BOLD(f"  {len(items)} items ingested"), DIM("═" * _width())]
     current = None
@@ -144,6 +137,6 @@ def raw_listing(items, warnings: list[str]) -> str:
         stamp = item.published.strftime("%m-%d %H:%M") if item.published else "  --  "
         out.append(f"  {DIM(item.id)} {DIM(stamp)}  {item.title}")
         out.append(f"        {CYAN(item.url)}")
-    out += [YELLOW(f"\n  ⚠ {warning}") for warning in warnings]
+    out += [YELLOW(f"\n  ⚠ {warning.text}") for warning in warnings]
     out.append("")
     return "\n".join(out)

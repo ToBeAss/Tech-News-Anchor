@@ -26,6 +26,8 @@ from urllib.parse import urlsplit, urlunsplit
 import feedparser
 import requests
 
+from .warnings import Warning
+
 # feedparser.parse(url) fetches with urllib: no timeout, no retries, and a
 # user-agent some feeds throttle. A hung socket on the Pi would stall the whole
 # run, and a single transient failure silently costs a source's worth of
@@ -268,15 +270,15 @@ def fetch_feed(source: dict, *, default_limit: int, cutoff: datetime | None):
     if error:
         # Distinguished from an empty feed on purpose: this is a lost source,
         # not a quiet one, and it measurably degrades the brief.
-        return [], f"{name}: UNREACHABLE — {error}"
+        return [], Warning(f"{name}: UNREACHABLE — {error}", degraded=True)
 
     try:
         parsed = feedparser.parse(body)
     except Exception as exc:
-        return [], f"{name}: parse failed: {exc}"
+        return [], Warning(f"{name}: parse failed: {exc}")
 
     if getattr(parsed, "bozo", 0) and not parsed.entries:
-        return [], f"{name}: unparseable feed ({getattr(parsed, 'bozo_exception', '?')})"
+        return [], Warning(f"{name}: unparseable feed ({getattr(parsed, 'bozo_exception', '?')})")
 
     rows: list[Item] = []
     in_window = 0
@@ -313,11 +315,11 @@ def fetch_feed(source: dict, *, default_limit: int, cutoff: datetime | None):
     # quiet day or a feed that moved. Silence is how a dead source rots unnoticed.
     warning = None
     if not parsed.entries:
-        warning = f"{name}: feed returned 0 entries — check the URL"
+        warning = Warning(f"{name}: feed returned 0 entries — check the URL")
     elif not rows:
-        warning = (f"{name}: nothing matched in window"
-                   + (f" (filtered {in_window} by keywords)"
-                      if (keywords or excludes) and in_window else ""))
+        warning = Warning(f"{name}: nothing matched in window"
+                          + (f" (filtered {in_window} by keywords)"
+                             if (keywords or excludes) and in_window else ""))
     elif len(rows) > limit and not source.get("preserve_order") and not keywords:
         # preserve_order sources take the top N of an already-ranked feed by
         # design — that's correct, not a cap binding. A date-sorted source
@@ -330,7 +332,7 @@ def fetch_feed(source: dict, *, default_limit: int, cutoff: datetime | None):
         # restating a known, accepted tradeoff rather than reporting anything
         # new — exactly the warning-fatigue this project already avoided once
         # with the off-lead figure check before verify.promote_leads existed.
-        warning = f"{name}: capped at {limit}, {len(rows) - limit} more in window were dropped"
+        warning = Warning(f"{name}: capped at {limit}, {len(rows) - limit} more in window were dropped")
 
     # HN is point-ranked and lobste.rs is hotness-ranked: the order the feed
     # arrives in IS the quality signal. Re-sorting by date throws that away and
@@ -354,7 +356,7 @@ def collect(sources: list[dict], *, hours: int, per_feed: int):
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours) if hours else None
     seen: set[str] = set()
     rows: list[Item] = []
-    warnings: list[str] = []
+    warnings: list[Warning] = []
 
     for source in sources:
         fetched, warning = fetch_feed(source, default_limit=per_feed, cutoff=cutoff)

@@ -22,6 +22,9 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 
+from .dedupe import lead_rank
+from .warnings import Warning
+
 # A run of digits, optionally with internal separators: 55, 0.32, 1,200, 1 000.
 # The escape is deliberate — the set includes a non-breaking space, which a
 # plain literal loses to any editor that normalises whitespace.
@@ -130,7 +133,7 @@ def check_lead(entry) -> list[str]:
                         _source_text(entry.item, lead_only=True))
 
 
-def _promote_lead(entry):
+def _promote_by_figure(entry):
     """Swap in the merged sibling that actually supports the headline's figures.
 
     Dedupe leads with whichever item the model listed first, which is often not
@@ -157,10 +160,126 @@ def _promote_lead(entry):
     return entry
 
 
+# Capitalised tokens, sentence-initial included. Excluding position 0 was the
+# first draft and it broke the exact case this exists to catch: this
+# project's headlines lead with the actor ("Datatilsynet is investigating
+# the Ryde data breach", "Norway funds AI centres it cannot staff") per
+# synth.py's own instruction to "name who did what", so the word most likely
+# to reveal a subject mismatch is routinely the first one. A stray common
+# word ("The", "New") capitalised only by sentence position costs nothing:
+# it is exactly as likely to appear in the lead's text as in a sibling's, so
+# it cannot tip a STRICT comparison either way.
+_PROPER_NOUN_RE = re.compile(r"[A-ZÆØÅ]\w*")
+
+
+def _proper_nouns(headline: str) -> set[str]:
+    """What's most likely to survive translation intact. synthesis writes
+    headlines in English from non-English sources (see synth.py's system
+    prompt); an entity name is usually copied verbatim where a verb or
+    adjective would be translated, so it is the part of the headline a
+    Norwegian-language sibling can still be scored against."""
+    return {m.group() for m in _PROPER_NOUN_RE.finditer(headline)}
+
+
+def _coverage(nouns: set[str], text: str) -> int:
+    return sum(1 for n in nouns if n in text)
+
+
+def _best_subject_sibling(entry) -> int | None:
+    """Index into entry.item.related of the sibling whose text covers more of
+    the headline's proper nouns than the lead's own text does, or None.
+
+    A STRICT improvement, not a subset test. Subset fails on a true positive:
+    an on-topic merged sibling almost always shares some of the lead's nouns
+    without being a better match for what the headline actually says, and
+    the earlier subset draft demoted a correct PREFER_LEAD source (digi.no)
+    to a coincidentally-overlapping one (simonwillison.net) over an AISI
+    headline. Ties keep the lead for the same reason — a sibling has to win
+    the comparison, not draw it.
+
+    title + summary on BOTH sides — deliberately NOT title-only despite
+    _source_text's rule to the contrary. That rule exists so a figure
+    verification never treats text the model was never shown as support for a
+    claim; it governs what may be trusted as evidence FOR a specific written
+    figure. This function verifies nothing — it only compares candidates
+    against each other to decide which one the reader should land on — so
+    there is no unseen text being smuggled in as support for anything. Scoring
+    the sibling on title alone while scoring the lead on title+summary would
+    just handicap every sibling by however much summary the lead happens to
+    carry, for no correctness reason. Do not narrow this back to title-only.
+
+    Ranked, not first-match: among every sibling that strictly beats the
+    lead's score, the highest-scoring one wins; a tie between siblings falls
+    back to PREFER_LEAD order, then to tuple position (which is itself
+    PREFER_LEAD-ordered by construction — see dedupe._order_group — so this
+    third level only ever matters for two siblings PREFER_LEAD doesn't rank).
+    """
+    nouns = _proper_nouns(entry.headline)
+    if not nouns:
+        return None
+    lead = entry.item
+    lead_score = _coverage(nouns, f"{lead.title} {lead.summary}")
+    improvers = [
+        (n, _coverage(nouns, f"{sibling.title} {sibling.summary}"), sibling)
+        for n, sibling in enumerate(lead.related)
+    ]
+    improvers = [(n, score, sibling) for n, score, sibling in improvers if score > lead_score]
+    if not improvers:
+        return None
+    best_n, _score, _sibling = max(
+        improvers, key=lambda c: (c[1], -lead_rank(c[2]), -c[0])
+    )
+    return best_n
+
+
+def _promote_by_subject(entry):
+    """The second gate. check_lead (and so _promote_by_figure) no-ops on any
+    figure-free headline — "Datatilsynet is investigating the Ryde data
+    breach" states no number — so a headline written from a merged sibling's
+    angle rather than the lead's own could pass through _promote_by_figure
+    untouched while still linking the wrong article. This catches that class
+    by subject rather than by figure."""
+    n = _best_subject_sibling(entry)
+    if n is None:
+        return entry
+    lead = entry.item
+    sibling = lead.related[n]
+    demoted = replace(lead, related=())
+    others = lead.related[:n] + lead.related[n + 1:]
+    return replace(entry, item=replace(sibling, id=lead.id,
+                                       related=(demoted, *others)))
+
+
+def _promote_lead(entry):
+    """Figure support first, subject coverage second. The figure gate is
+    tried first because it is the stronger claim — an unsupported number is a
+    factual defect, a subject mismatch is a framing one — and a promotion it
+    makes is left alone rather than being second-guessed by the subject gate.
+    """
+    fixed = _promote_by_figure(entry)
+    if fixed is not entry:
+        return fixed
+    return _promote_by_subject(entry)
+
+
+def check_subject(entry) -> bool:
+    """True when a merged sibling's title covers the headline's subject better
+    than the lead being linked does.
+
+    Called again here, after promote_leads has already run, for the same
+    reason check_lead is: _promote_by_subject only ever runs when the figure
+    gate didn't already claim the swap, so an entry the figure gate promoted
+    for an unrelated reason can still leave a subject mismatch unresolved.
+    Firing here means no better sibling was available to fix it automatically.
+    """
+    return _best_subject_sibling(entry) is not None
+
+
 def promote_leads(brief):
-    """Re-point any entry whose figures are supported by a sibling rather than
-    its own lead. Must run before memory records the brief, so the snapshot is
-    taken against the link that ships."""
+    """Re-point any entry whose figures — or, failing that, whose headline
+    subject — are better supported by a sibling than by its own lead. Must run
+    before memory records the brief, so the snapshot is taken against the link
+    that ships."""
     swapped = {}
 
     def fix(entry):
@@ -181,27 +300,41 @@ def promote_leads(brief):
     return replace(brief, top=top, also=also, video=video, groups=groups)
 
 
-def check(brief) -> tuple[dict[str, list[str]], list[str]]:
-    """Verify every entry. Returns (item_id -> bad figures, warnings)."""
+def check(brief) -> tuple[dict[str, list[str]], list[Warning]]:
+    """Verify every entry. Returns (item_id -> bad figures, warnings).
+
+    Every warning here is operator-only: a figure or subject mismatch is a
+    defect to fix or investigate, not something the brief's reader has any
+    use for seeing in a Slack/Discord footer.
+    """
     flagged: dict[str, list[str]] = {}
-    warnings: list[str] = []
+    warnings: list[Warning] = []
 
     for entry in brief.entries():
         bad = check_entry(entry)
         if bad:
             flagged[entry.item.id] = bad
-            warnings.append(
+            warnings.append(Warning(
                 f"UNVERIFIED FIGURE in {entry.item.id}: {', '.join(bad)} "
                 "— not present in the source text"
-            )
+            ))
             continue
 
         # Supported, but by a merged sibling rather than the article being
         # linked — and no sibling could be promoted to fix it.
         off_lead = check_lead(entry)
         if off_lead:
-            warnings.append(
+            warnings.append(Warning(
                 f"OFF-LEAD FIGURE in {entry.item.id}: {', '.join(off_lead)} "
                 "— supported only by a merged source, not the primary link"
-            )
+            ))
+
+        # Same idea, no figure involved: the headline's subject reads closer
+        # to a merged sibling than to the article being linked, and promotion
+        # found no sibling that covers it strictly better than the lead does.
+        if check_subject(entry):
+            warnings.append(Warning(
+                f"OFF-LEAD SUBJECT in {entry.item.id}: headline reads closer "
+                "to a merged sibling than to the primary link"
+            ))
     return flagged, warnings
